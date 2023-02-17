@@ -1,0 +1,46 @@
+{
+    "posterior":"factorised gaussian",
+    "predict":"regression",
+    "loss":"bayes by backprop.",
+    "likelihood":"gaussian",
+    "batch":10,
+    "epoch":100,
+    "learning rate":0.001,
+    "optimiser":"momentum",
+    "in_dim":1,
+    "out_dim":1,
+    "layers":[
+        {
+            "name": "dense1",
+            "type": "dense",
+            "dense_param":{
+                "dim": 10,
+                "use_bias":1
+            },
+            "prior_param":{
+                "prior_input":"uninformative",
+                "prior_type":"gaussian",
+                "prior_ratio":0.5,
+                "out_std":1.0
+            },
+            "weight_init":"orthogonal",
+            "activation":"ReLU"
+        },
+        {
+            "name": "dense2",
+            "type": "dense",
+            "dense_param":{
+                "dim": 1,
+                "use_bias":1
+            },
+            "prior_param":{
+                "prior_input":"uninformative",
+                "prior_type":"gaussian mixture",
+                "prior_ratio":0.50,
+                "out_std":2.0
+            },
+            "weight_init":"orthogonal",
+            "activation":"Linear"
+        }
+    ]
+}

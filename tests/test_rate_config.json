@@ -1,0 +1,26 @@
+{
+    "posterior":"conv mcmc",
+    "predict":"classify",
+    "loss":"mse",
+    "likelihood":"normal",
+    "batch":50,
+    "epoch":5000,
+    "learning rate":0.001,
+    "optimiser":"adam",
+    "layers":[
+        {
+            "name": "dense1",
+            "type": "dense",
+            "dense_param":{
+                "dim": 1,
+                "use_bias": 0
+            },
+            "prior_param":{
+                "prior_input":"uninformative"
+            },
+            "kernel_initializer":"orthogonal",
+            "bias_initializer":"glorot_uniform",
+            "activation":"linear"
+        }
+    ]
+}
