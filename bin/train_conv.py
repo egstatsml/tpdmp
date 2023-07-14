@@ -1,4 +1,5 @@
 """Fit conv. nets with PDMDs."""
+import contextlib
 import matplotlib.pyplot as plt
 import numpy as np
 import sklearn.model_selection
@@ -25,10 +26,11 @@ from tbnn.pdmp.networks import get_network
 from tbnn.pdmp import networks
 
 from tbnn.pdmp import agc
+import tensorflow_models as tfm
 
 from tbnn.pdmp.model import (
     get_map_test, plot_density, get_model_state, pred_forward_pass, get_map,
-    get_mle, trace_fn, graph_hmc, nest_concat, set_model_params, build_network,
+    get_mle, trace_fn, graph_hmc, nest_concat, set_model_params, build_network, set_model_params_hmc,
     bps_iter_main, hmc_main, nuts_main, boomerang_iter_main, pbps_iter_main,
     get_map_iter, sgld_iter_main, save_map_weights,
     cov_pbps_test_iter_main, boomerang_test_iter_main, variational_iter_main, hmc_iter_main)
@@ -51,6 +53,17 @@ tfd = tfp.distributions
 
 VALID_OPTIMIZER_STRS = ['sgd', 'adam', 'rmsprop']
 
+
+class NoDistribute():
+  """Implements a scope method that does nothing
+
+  Is usefule for when working with HMC from tfp, which doesn't support
+  strategies.
+  """
+  scope = contextlib.nullcontext
+
+  def experimental_distribute_dataset(self, dataset):
+    return dataset
 
 class MyLR(tf.keras.optimizers.schedules.LearningRateSchedule):
 
@@ -346,6 +359,47 @@ def bnn_neg_joint_log_prob_fn(model, likelihood_fn, X, y):
   return _fn
 
 
+def bnn_hmc_neg_joint_log_prob_fn(model, likelihood_fn, X, y):
+  """Compute neg joint log prob for model for HMC
+
+    Is essentially the same as the neg joint log prob used
+    for pdmp methods, but uses a different method to set model params.
+
+
+    Parameters
+    ----------
+    model : keras.Model
+        Model that helps define likelihood.
+    likelihood_fn : tfp.Distribution
+        Distribution with the log_prob method.
+    X : tf.Tensor
+        input array
+    y : tf.Tensor
+        output label's.
+
+    Returns
+    -------
+    callable that will compute the neg joint log prob, that requires model parameters to be supplied as an argument.
+    """
+
+  def _fn(*param_list):
+    with tf.name_scope('bnn_joint_log_prob_fn'):
+      # set the model params
+      m = set_model_params(model, param_list)
+      # print('current  model params ttttt= {}'.format(model.layers[1].kernel))
+      # neg log likelihood of predicted labels
+      neg_ll = neg_log_likelihood(m, likelihood_fn, X, y)
+      # now get the losses from the prior (negative log prior)
+      # these are stored within the models `losses` variable
+      neg_lp = tf.reduce_sum(m.losses)
+      # add them together for the total loss
+      return neg_ll + neg_lp
+
+  return _fn
+
+
+
+
 def loss_object_opt(model, likelihood_fn, X, y):
   with tf.name_scope('loss_object_opt'):
     return neg_joint(model, likelihood_fn, X, y)
@@ -409,6 +463,18 @@ def gradient_step(model, likelihood_fn, X, y, param_list):
   return gradients
 
 
+
+def hmc_step(model, likelihood_fn, X, y, param_list):
+  """For HMC, just want to compute the neg joint log prob"""
+  # set the model params
+  print(f'grad_step param list shape={len(param_list)}')
+  print(f'grad_step : {param_list[-1]}')
+  model = set_model_params_hmc(model, param_list)
+  neg_log_prob = neg_joint(model, likelihood_fn, X, y)
+  # need to remove the negative for HMC with tfp
+  return -1.0 * neg_log_prob
+
+
 def opt_step(compute_loss, model, X, y, optimizer):
   # set the model params
   with tf.GradientTape() as tape:
@@ -416,6 +482,18 @@ def opt_step(compute_loss, model, X, y, optimizer):
     # predictions = model(X, training=True)
     # neg_ll = compute_loss(y, predictions)
   gradients = tape.gradient(neg_log_prob, model.trainable_variables)
+  # grad_mean = [tf.reduce_mean(x).numpy() for x in gradients]
+  # grad_min = [tf.reduce_min(x).numpy() for x in gradients]
+  # grad_max = [tf.reduce_max(x).numpy() for x in gradients]
+  # print('grad max')
+  # print(grad_max)
+  # print('grad mean')
+  # print(grad_mean)
+  # print('grad min')
+  # print(grad_min)
+
+
+
   # agc_gradients = agc.adaptive_clip_grad(model.trainable_variables,
   #                                        gradients,
   #                                        clip_factor=0.01,
@@ -427,8 +505,9 @@ def opt_step(compute_loss, model, X, y, optimizer):
   return neg_log_prob
 
 
+
 def sgld_step(compute_loss, model, X, y, optimizer):
-  # set the model params
+  # set the model
   with tf.GradientTape() as tape:
     neg_log_prob = compute_loss(X, y)
     # predictions = model(X, training=True)
@@ -463,6 +542,38 @@ def distributed_gradient_step(model, likelihood_fn, X, y, strategy):
   return _fn
 
 
+def distributed_hmc_step(model, likelihood_fn, X, y, strategy):
+
+  def _fn(param_list):
+    per_replica_gradient = strategy.run(hmc_step,
+                                        args=(
+                                            model,
+                                            likelihood_fn,
+                                            X,
+                                            y,
+                                            param_list,
+                                        ))
+    return strategy.reduce(tf.distribute.ReduceOp.SUM,
+                           per_replica_gradient,
+                           axis=None)
+  return _fn
+
+
+
+def hmc_step_wrapper(model, likelihood_fn, X, y, strategy):
+
+  def _fn(*param_list):
+    joint_log_prob = hmc_step(model,
+                              likelihood_fn,
+                              X,
+                              y,
+                              param_list)
+    return joint_log_prob
+  return _fn
+
+
+
+
 @tf.function
 def distributed_opt_step(compute_loss, model, X, y, strategy, optimizer):
   per_replica_loss = strategy.run(opt_step,
@@ -476,6 +587,7 @@ def distributed_opt_step(compute_loss, model, X, y, strategy, optimizer):
   return strategy.reduce(tf.distribute.ReduceOp.SUM,
                          per_replica_loss,
                          axis=None)
+
 
 
 @tf.function
@@ -520,6 +632,13 @@ def iter_sgld_fn(loss_fn, model, dataset_iter, strategy, optimizer):
 
   return _fn
 
+def iter_hmc_fn(model, likelihood_fn, dataset_iter, strategy):
+
+  def _fn():
+    X, y = dataset_iter.next()
+    return hmc_step_wrapper(model, likelihood_fn, X, y, strategy)
+  return _fn
+
 
 
 def hessian_diag_step(model, likelihood_fn, X, y):
@@ -560,6 +679,7 @@ def create_loss_fn(model, likelihood_fn, args, strategy):
     def compute_loss(X, y):
       pred = model(X, training=True)
       neg_ll = likelihood_fn(y, pred)
+      # print(f'neg_ll = {tf.reduce_sum(neg_ll)}')
       # now get the losses from the prior (negative log prior)
       # these are stored within the models `losses` variable
       neg_lp = tf.reduce_sum(model.losses)
@@ -595,10 +715,13 @@ def create_sgld_loss_fn(model, likelihood_fn, args, data_dimension_dict, strateg
 
 
 
-def get_distribution_strategy(gpus):
+def get_distribution_strategy(gpus, hmc=False):
   if len(gpus) == 1:
     print(gpus)
-    return tf.distribute.OneDeviceStrategy(gpus[0])
+    if hmc:
+      return NoDistribute()
+    else:
+      return tf.distribute.OneDeviceStrategy(gpus[0])
   else:
     return tf.distribute.MirroredStrategy(gpus)
 
@@ -611,6 +734,7 @@ def get_optimizer(optimizer_str,
                   t_mul=None,
                   m_mul=None,
                   piecewise_decay_steps=None,
+                  decay_rate=0.1,
                   num_iters=0):
   """Get right optimi_zer for the job.
 
@@ -649,6 +773,9 @@ def get_optimizer(optimizer_str,
   piecewise_decay_steps: list(int) (default None)
       Steps to apply the learning rate schedule.
       Used by:  PiecewiseDecay, CosineDecayRestarts, PolynomialDecay for SGLD
+  decay_rate: float (default 0.1)
+      If piecewise  decay is specified, this is the rate at which lr will be
+      attenuated
   num_iters: int (default 0)
       Number of training iters. Is used if cosine schedule applied.
       Used by: CosineDecay
@@ -673,13 +800,13 @@ def get_optimizer(optimizer_str,
     elif schedule.lower() == 'piecewise':
       # create the steps needed
       lr_values = [
-          initial_lr * 0.1**(i) for i in range(len(piecewise_decay_steps) + 1)
+          initial_lr * decay_rate**(i) for i in range(len(piecewise_decay_steps) + 1)
       ]
       print('here')
       print(piecewise_decay_steps)
       print(lr_values)
       lr = tf.keras.optimizers.schedules.PiecewiseConstantDecay(
-          decay_steps, lr_values)
+          piecewise_decay_steps, lr_values)
     elif schedule.lower() == 'cosine':
       lr = tf.keras.optimizers.schedules.CosineDecay(initial_lr, num_iters)
       print('cosine lr')
@@ -694,7 +821,15 @@ def get_optimizer(optimizer_str,
     elif schedule.lower() == 'linear':
       lr = tf.keras.optimizers.schedules.PolynomialDecay(
           initial_lr, piecewise_decay_steps, end_learning_rate=0.0, power=1)
+    elif schedule.lower() == 'warmup':
+      lr = tf.keras.optimizers.schedules.PiecewiseConstantDecay(
+          [1000, 2000, 5000], [initial_lr * 0.001, initial_lr * 0.01, initial_lr * 0.1, initial_lr])
 
+      # lr = tfm.optimization.LinearWarmup(
+      #   after_lr,
+      #   1000,
+      #   0.0000001
+      # )
     elif schedule.lower() == 'mine':
       lr = MyLR(lr)
       print('getting my warmup lr')
@@ -775,7 +910,7 @@ def normal_likelihood():
 
   def _fn(y, pred):
     y = tf.cast(y, tf.float32)
-    dist = tfd.Normal(loc=pred, scale=0.1)
+    dist = tfd.Normal(loc=pred, scale=1.0)
     return -1.0 * dist.log_prob(y)
 
   return _fn
@@ -784,14 +919,12 @@ def normal_likelihood():
 def main(args):
   """main function to fit the models"""
   # get the distribution strategy.
-
-
-  strategy = get_distribution_strategy(args.gpus)
+  strategy = get_distribution_strategy(args.gpus, args.hmc)
   # getting the data
   (training_iter, training_ds, test_ds, orig_test_ds, data_dimension_dict,
    label_dict) = get_data(args.data, args.batch_size, strategy)
   # if is regression model
-  if args.data in ['toy_a', 'toy_b', 'toy_c', 'moons']:
+  if args.data in ['toy_a', 'toy_b', 'toy_c', 'moons', 'boston']:
     input_dims = [data_dimension_dict['in_dim']]
   else:
     input_dims = [
@@ -827,7 +960,7 @@ def main(args):
   else:
     # is bernoulli
     likelihood_fn = tf.keras.losses.BinaryCrossentropy(
-        from_logits=True, reduction=tf.keras.losses.Reduction.SUM)
+        from_logits=True, reduction=tf.keras.losses.Reduction.NONE)
     likelihood_fn_map = tf.keras.losses.BinaryCrossentropy(
         from_logits=True, reduction=tf.keras.losses.Reduction.NONE)
 
@@ -856,6 +989,7 @@ def main(args):
                               t_mul=args.t_mul,
                               m_mul=args.m_mul,
                               piecewise_decay_steps=args.decay_steps,
+                              decay_rate=args.decay_rate,
                               num_iters=args.map_iters)
     dist_opt_step = iter_opt_fn(model, loss_fn, training_iter, strategy,
                                 optimizer)
@@ -887,15 +1021,19 @@ def main(args):
       print('Test accuracy from MAP = {}'.format(accuracy))
     # plot response for a regression model
     elif args.likelihood == 'normal':
-      X_train, y_train = next(training_iter)
-      model = set_model_params(model, map_initial_state)
-      pred = pred_forward_pass(model, map_initial_state,
-                               X_train.numpy().astype(np.float32))
-      plt.plot(X_train, pred, color='k')
-      print(X_train.shape)
-      print(y_train.shape)
-      plt.scatter(X_train, y_train, color='b', alpha=0.25)
-      plt.savefig(os.path.join(args.out_dir, 'pred_map.png'))
+      if args.data in ['boston']:
+        # no plots for the UCI data
+        pass
+      else:
+        X_train, y_train = next(training_iter)
+        model = set_model_params(model, map_initial_state)
+        pred = pred_forward_pass(model, map_initial_state,
+                                 X_train.numpy().astype(np.float32))
+        plt.plot(X_train, pred, color='k')
+        print(X_train.shape)
+        print(y_train.shape)
+        plt.scatter(X_train, y_train, color='b', alpha=0.25)
+        plt.savefig(os.path.join(args.out_dir, 'pred_map.png'))
     # plot map response for logistic regression model
     else:
       X_train, y_train = next(training_iter)
@@ -943,7 +1081,9 @@ def main(args):
                   args.batch_size,
                   args.batch_size,
                   data_dimension_dict,
-                  plot_results=~args.no_plot,
+                  # plot_results=~args.no_plot,
+                  plot_results=False,
+                  run_eval=False,
                   num_steps_between_results=args.steps_between)
   if args.boomerang:
     boomerang_test_iter_main(model,
@@ -966,7 +1106,9 @@ def main(args):
                              args.batch_size,
                              args.batch_size,
                              data_dimension_dict,
-                             plot_results=~args.no_plot,
+                             # plot_results=~args.no_plot,
+                             plot_results=False,
+                             run_eval=False,
                              num_steps_between_results=args.steps_between)
   if args.cov_pbps:
     cov_pbps_test_iter_main(model,
@@ -986,7 +1128,9 @@ def main(args):
                             args.batch_size,
                             args.batch_size,
                             data_dimension_dict,
-                            plot_results=~args.no_plot,
+                            plot_results=False,
+                            run_eval=False,
+                            # plot_results=~args.no_plot,
                             num_steps_between_results=args.steps_between)
 
   if args.pbps:
@@ -1007,7 +1151,9 @@ def main(args):
                    args.batch_size,
                    args.batch_size,
                    data_dimension_dict,
-                   plot_results=~args.no_plot,
+                   # plot_results=~args.no_plot,
+                   plot_results=False,
+                   run_eval=False,
                    num_steps_between_results=args.steps_between)
   if args.vi:
     # create a likelihood that will use sum reduction
@@ -1047,6 +1193,7 @@ def main(args):
                               args.lr,
                               strategy,
                               schedule='linear',
+                              # schedule= None,
                               momentum=0.0,
                               t_mul=0.0,
                               m_mul=0.0,
@@ -1072,12 +1219,14 @@ def main(args):
                    orig_test_ds,
                    args.likelihood,
                    data_dimension_dict,
-                   plot_results=~args.no_plot,
-                   run_eval=True,
+                   # plot_results=~args.no_plot,
+                   # run_eval=True,
+                   plot_results=False,
+                   run_eval=False,
                    num_steps_between_results=args.steps_between)
   if args.hmc:
     # get the normal log prob (not the negative)
-    bnn_joint_log_prob = iter_fwd_fn(model,
+    bnn_joint_log_prob = iter_hmc_fn(model,
                                      likelihood_fn,
                                      training_iter,
                                      strategy)
@@ -1086,6 +1235,8 @@ def main(args):
                   args.num_results,
                   args.num_burnin,
                   args.out_dir,
+                  args.step_size,
+                  args.leapfrog_steps,
                   bnn_joint_log_prob,
                   map_initial_state,
                   training_ds,
@@ -1093,8 +1244,9 @@ def main(args):
                   orig_test_ds,
                   args.likelihood,
                   data_dimension_dict,
-                  plot_results=~args.no_plot,
-                  run_eval=True)
+                  plot_results=False,#~args.no_plot,
+                  run_eval=False,
+                  num_steps_between_results=args.steps_between)
 
 def check_cmd_args(args):
   """check all the commandline arguments are valid"""
@@ -1339,6 +1491,16 @@ if __name__ == '__main__':
                       nargs='?',
                       const=True,
                       help='whether to run HMC')
+  parser.add_argument('--step_size',
+                      type=float,
+                      default=0.0001,
+                      nargs='?',
+                      help='HMC step size')
+  parser.add_argument('--leapfrog_steps',
+                      type=int,
+                      default=10,
+                      nargs='?',
+                      help='Number HMC leapfrog steps')
   parser.add_argument('--num_results',
                       type=int,
                       default=100,
@@ -1349,7 +1511,7 @@ if __name__ == '__main__':
                       help='number of loops needed to get all results')
   parser.add_argument('--steps_between',
                       type=int,
-                      default=0,
+                      default=1,
                       help='number samples between results')
   parser.add_argument('--num_burnin',
                       type=int,
@@ -1394,7 +1556,7 @@ if __name__ == '__main__':
   ]
   if (not args.no_log):
     print('logging to neptune')
-    neptune.init('XXXXXYYYYY/{}'.format(args.exp_name))
+    neptune.init('ethangoan/{}'.format(args.exp_name))
     neptune.create_experiment(
         name='test_conv',
         params=exp_params,

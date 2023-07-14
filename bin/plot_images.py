@@ -145,7 +145,6 @@ def main(args):
                                  pred_mean)
 
 
-
 def get_distribution_strategy(gpus):
   if len(gpus) == 1:
     print(gpus)

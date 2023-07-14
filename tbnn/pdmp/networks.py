@@ -23,9 +23,9 @@ tfd = tfp.distributions
 
 # permitted values for the different arguments specified by cmdline args
 VALID_NETWORKS = [
-    'lenet5', 'resnet20', 'resnet18', 'resnet50', 'kaggle', 'small_cnn', 'small_regression',
-    'retinopathy', 'uci_mlp', 'nfnet', 'nfnet2', 'resnet20_wide', 'med_mnist',
-    'cifar_alexnet', 'resnet50_keras'
+    'lenet5', 'resnet20', 'resnet18', 'resnet50', 'kaggle', 'small_cnn',
+    'small_regression', 'logistic', 'retinopathy', 'uci_mlp', 'nfnet', 'nfnet2',
+    'resnet20_wide', 'med_mnist', 'cifar_alexnet', 'resnet50_keras'
 ]
 VALID_PRIOR_STRS = ['fan_in']
 VALID_LIKELIHOOD = ['normal', 'bernoulli', 'categorical']
@@ -191,12 +191,12 @@ def default_multivariate_normal_fn(dtype, shape, name, trainable,
   Returns:
     Multivariate standard `Normal` distribution.
   """
-  del name, trainable, add_variable_fn   # unused
-  dist = normal_lib.Normal(
-      loc=tf.zeros(shape, dtype), scale=dtype.as_numpy_dtype(scale))
+  del name, trainable, add_variable_fn  # unused
+  dist = normal_lib.Normal(loc=tf.zeros(shape, dtype),
+                           scale=dtype.as_numpy_dtype(scale))
   batch_ndims = tf.size(dist.batch_shape_tensor())
-  return independent_lib.Independent(
-      dist, reinterpreted_batch_ndims=batch_ndims)
+  return independent_lib.Independent(dist,
+                                     reinterpreted_batch_ndims=batch_ndims)
 
 
 def get_vi_prior(prior, is_bias=False, use_bias=True):
@@ -204,8 +204,7 @@ def get_vi_prior(prior, is_bias=False, use_bias=True):
   # is compatable with tfp, and can also accept prior scales
   def _multivariate_normal_wrapper(dtype, shape, name, trainable,
                                    add_variable_fn):
-    return default_multivariate_normal_fn(dtype, shape,
-                                          name, trainable,
+    return default_multivariate_normal_fn(dtype, shape, name, trainable,
                                           add_variable_fn, prior)
 
   # check if the specified prior is an float (or int) or a string to say we
@@ -226,6 +225,7 @@ def get_vi_prior(prior, is_bias=False, use_bias=True):
     return None
   else:
     raise ValueError(f'Invalid prior specified: {prior}')
+
 
 def get_likelihood_fn(likelihood_str):
   """Get likelihood for the current model.
@@ -330,33 +330,36 @@ def get_lenet_5(input_dims,
   #                 activation=None)(x)
 
   inputs = Input(input_dims)
-  layer_one = get_conv_layer(6, 5, padding='SAME',
-                              activation=activation,
-                              prior=prior,
-                              vi=vi)
+  layer_one = get_conv_layer(6,
+                             5,
+                             padding='SAME',
+                             activation=activation,
+                             prior=prior,
+                             vi=vi)
   x = layer_one(inputs)
   x = MaxPool2D(pool_size=[2, 2], strides=[2, 2], padding='SAME')(x)
-  layer_two = get_conv_layer(16, 5, padding='SAME',
-                              activation=activation,
-                              prior=prior,
-                              vi=vi)
+  layer_two = get_conv_layer(16,
+                             5,
+                             padding='SAME',
+                             activation=activation,
+                             prior=prior,
+                             vi=vi)
   x = layer_two(x)
   x = MaxPool2D(pool_size=[2, 2], strides=[2, 2], padding='SAME')(x)
-  layer_three = get_conv_layer(120, 5, padding='SAME',
-                              activation=activation,
-                              prior=prior,
-                              vi=vi)
+  layer_three = get_conv_layer(120,
+                               5,
+                               padding='SAME',
+                               activation=activation,
+                               prior=prior,
+                               vi=vi)
   x = layer_three(x)
   x = Flatten()(x)
-  layer_four = get_dense_layer(84,
-                               activation=activation,
-                              prior=prior,
-                              vi=vi)
+  layer_four = get_dense_layer(84, activation=activation, prior=prior, vi=vi)
   x = layer_four(x)
   layer_five = get_dense_layer(num_classes,
-                              activation=activation,
-                              prior=prior,
-                              vi=vi)
+                               activation=activation,
+                               prior=prior,
+                               vi=vi)
   outputs = layer_five(x)
   lenet5 = Model(inputs, outputs)
   return lenet5
@@ -448,13 +451,13 @@ def get_conv_layer(units,
                                               use_bias=use_bias,
                                               is_bias=True)
     conv_layer = Conv2D(units,
-                         kernel_size=kernel_size,
-                         strides=strides,
-                         padding=padding,
-                         kernel_regularizer=kernel_prior_fn,
-                         use_bias=use_bias,
-                         bias_regularizer=bias_prior_fn,
-                         activation=activation)
+                        kernel_size=kernel_size,
+                        strides=strides,
+                        padding=padding,
+                        kernel_regularizer=kernel_prior_fn,
+                        use_bias=use_bias,
+                        bias_regularizer=bias_prior_fn,
+                        activation=activation)
   else:
     kernel_prior_fn = get_vi_prior(prior, use_bias=use_bias)
     bias_prior_fn = get_vi_prior(prior, use_bias=use_bias, is_bias=True)
@@ -473,9 +476,16 @@ def get_conv_layer(units,
         activation=activation)
   return conv_layer
 
-def get_dense_layer(units, activation=None, prior=None, use_bias=True, vi=False):
+
+def get_dense_layer(units,
+                    activation=None,
+                    prior=None,
+                    use_bias=True,
+                    vi=False):
   if not vi:
-    kernel_prior_fn = get_prior_neg_log_prob_fn(prior, use_bias=use_bias, is_bias=False)
+    kernel_prior_fn = get_prior_neg_log_prob_fn(prior,
+                                                use_bias=use_bias,
+                                                is_bias=False)
     bias_prior_fn = get_prior_neg_log_prob_fn(prior,
                                               use_bias=use_bias,
                                               is_bias=True)
@@ -489,29 +499,30 @@ def get_dense_layer(units, activation=None, prior=None, use_bias=True, vi=False)
                         activation=activation)
   else:
     kernel_prior_fn = get_vi_prior(prior, use_bias=use_bias)
-    bias_prior_fn = get_vi_prior(prior,
-                                 use_bias=use_bias,
-                                 is_bias=True)
+    bias_prior_fn = get_vi_prior(prior, use_bias=use_bias, is_bias=True)
     # kernel_prior_fn = None
     # bias_prior_fn = None
     print(kernel_prior_fn)
     # time.sleep(10)
-    kl_divergence_function = (lambda q, p, _: tfd.kl_divergence(q, p) /  # pylint: disable=g-long-lambda
-                            tf.cast(1, dtype=tf.float32))
-    dense_layer = tfp.layers.DenseReparameterization(units,
-                                                     kernel_divergence_fn=kl_divergence_function,
-                                                     kernel_prior_fn=kernel_prior_fn,
-                                                     bias_prior_fn=bias_prior_fn,
-                                                     bias_divergence_fn=kl_divergence_function,
-                                                     activation=activation)
+    kl_divergence_function = (
+        lambda q, p, _: tfd.kl_divergence(q, p) /  # pylint: disable=g-long-lambda
+        tf.cast(1, dtype=tf.float32))
+    dense_layer = tfp.layers.DenseReparameterization(
+        units,
+        kernel_divergence_fn=kl_divergence_function,
+        kernel_prior_fn=kernel_prior_fn,
+        bias_prior_fn=bias_prior_fn,
+        bias_divergence_fn=kl_divergence_function,
+        activation=activation)
   return dense_layer
+
 
 def get_small_regression(input_dims,
                          out_dims,
                          prior=1.0,
                          use_bias=True,
                          vi=False,
-                         activation='relu'):
+                         activation='tanh'):
   # inputs = Input(input_dims)
   # layer_one = get_dense_layer(100,
   #                             activation=activation,
@@ -531,7 +542,7 @@ def get_small_regression(input_dims,
   # small_regression = Model(inputs, outputs)
 
   inputs = Input(input_dims)
-  x = Dense(128,
+  x = Dense(25,
             kernel_regularizer=get_prior_neg_log_prob_fn(prior,
                                                          use_bias=use_bias),
             use_bias=use_bias,
@@ -539,7 +550,7 @@ def get_small_regression(input_dims,
                                                        use_bias=use_bias,
                                                        is_bias=True),
             activation=activation)(inputs)
-  x = Dense(128,
+  x = Dense(10,
             kernel_regularizer=get_prior_neg_log_prob_fn(prior,
                                                          use_bias=use_bias),
             use_bias=use_bias,
@@ -547,14 +558,14 @@ def get_small_regression(input_dims,
                                                        use_bias=use_bias,
                                                        is_bias=True),
             activation=activation)(x)
-  x = Dense(128,
-            kernel_regularizer=get_prior_neg_log_prob_fn(prior,
-                                                         use_bias=use_bias),
-            use_bias=use_bias,
-            bias_regularizer=get_prior_neg_log_prob_fn(prior,
-                                                       use_bias=use_bias,
-                                                       is_bias=True),
-            activation=activation)(x)
+  # x = Dense(128,
+  #           kernel_regularizer=get_prior_neg_log_prob_fn(prior,
+  #                                                        use_bias=use_bias),
+  #           use_bias=use_bias,
+  #           bias_regularizer=get_prior_neg_log_prob_fn(prior,
+  #                                                      use_bias=use_bias,
+  #                                                      is_bias=True),
+  #           activation=activation)(x)
 
   # x = Dense(512,
   #           kernel_regularizer=get_prior_neg_log_prob_fn(prior,
@@ -604,6 +615,94 @@ def get_small_regression(input_dims,
   small_regression = Model(inputs, outputs)
   return small_regression
 
+
+def get_logistic(input_dims,
+                 out_dims,
+                 prior=1.0,
+                 use_bias=True,
+                 vi=False,
+                 activation='relu'):
+  inputs = Input(input_dims)
+  x = Dense(100,
+            kernel_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                         use_bias=use_bias),
+            use_bias=use_bias,
+            bias_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                       use_bias=use_bias,
+                                                       is_bias=True),
+            activation=activation)(inputs)
+  x = Dense(100,
+            kernel_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                         use_bias=use_bias),
+            use_bias=use_bias,
+            bias_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                       use_bias=use_bias,
+                                                       is_bias=True),
+            activation=activation)(inputs)
+
+  x = Dense(100,
+            kernel_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                         use_bias=use_bias),
+            use_bias=use_bias,
+            bias_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                       use_bias=use_bias,
+                                                       is_bias=True),
+            activation=activation)(x)
+  # x = Dense(128,
+  #           kernel_regularizer=get_prior_neg_log_prob_fn(prior,
+  #                                                        use_bias=use_bias),
+  #           use_bias=use_bias,
+  #           bias_regularizer=get_prior_neg_log_prob_fn(prior,
+  #                                                      use_bias=use_bias,
+  #                                                      is_bias=True),
+  #           activation=activation)(x)
+
+  # x = Dense(512,
+  #           kernel_regularizer=get_prior_neg_log_prob_fn(prior,
+  #                                                        use_bias=use_bias),
+  #           use_bias=use_bias,
+  #           bias_regularizer=get_prior_neg_log_prob_fn(prior,
+  #                                                      use_bias=use_bias,
+  #                                                      is_bias=True),
+  #           activation=activation)(x)
+  # x = Dense(512,
+  #           kernel_regularizer=get_prior_neg_log_prob_fn(
+  #             prior, use_bias=use_bias),
+  #           use_bias=use_bias,
+  #           bias_regularizer=get_prior_neg_log_prob_fn(
+  #             prior, use_bias=use_bias, is_bias=True),
+  #           activation=activation)(x)
+  # x = Dense(512,
+  #           kernel_regularizer=get_prior_neg_log_prob_fn(
+  #             prior, use_bias=use_bias),
+  #           use_bias=use_bias,
+  #           bias_regularizer=get_prior_neg_log_prob_fn(
+  #             prior, use_bias=use_bias, is_bias=True),
+  #           activation=activation)(x)
+  # x = Dense(10,
+  #           kernel_regularizer=get_prior_neg_log_prob_fn(
+  #             prior, use_bias=use_bias),
+  #           use_bias=use_bias,
+  #           bias_regularizer=get_prior_neg_log_prob_fn(
+  #             prior, use_bias=use_bias, is_bias=True),
+  #           activation='leaky_relu')(x)
+  # x = Dense(10,
+  #           kernel_regularizer=get_prior_neg_log_prob_fn(prior,
+  #                                                        use_bias=use_bias),
+  #           use_bias=use_bias,
+  #           bias_regularizer=get_prior_neg_log_prob_fn(prior,
+  #                                                      use_bias=use_bias,
+  #                                                      is_bias=True),
+  #           activation=activation)(x)
+  outputs = Dense(out_dims,
+                  kernel_regularizer=get_prior_neg_log_prob_fn(
+                      prior, use_bias=use_bias),
+                  use_bias=use_bias,
+                  bias_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                             use_bias=use_bias,
+                                                             is_bias=True),
+                  activation=None)(x)
+  small_regression = Model(inputs, outputs)
   return small_regression
 
 
@@ -888,24 +987,24 @@ def get_linear(input_dims,
                                                        is_bias=True),
             activation=activation)(inputs)
 
+
 def load_keras_resnet50(prior, strategy):
   with strategy.scope():
-    model = tf.keras.applications.resnet50.ResNet50(
-      input_shape=(224, 224, 3),
-      include_top=True,
-      weights='imagenet',
-      classifier_activation=None)
+    model = tf.keras.applications.resnet50.ResNet50(input_shape=(224, 224, 3),
+                                                    include_top=True,
+                                                    weights='imagenet',
+                                                    classifier_activation=None)
     # _ = model(tf.random.normal(1,224,224,3))
     # now need to add prior to all the conv and dense layers
     prior_fn = get_prior_neg_log_prob_fn(prior,
                                          kernel_dims=None,
                                          use_bias=True,
                                          is_bias=False)
+
     def _prior_for_variable(v):
       """Creates a regularization loss `Tensor` for variable `v`."""
       prior = prior_fn(v)
       return prior
-
 
     for layer in model.layers:
       if isinstance(layer, (Dense, Conv2D)):
@@ -920,13 +1019,6 @@ def load_keras_resnet50(prior, strategy):
         layer.trainable = False
 
   return model
-
-
-
-
-
-
-
 
 
 def get_network(network,
@@ -989,6 +1081,8 @@ def get_network(network,
       model = get_small_cnn(input_dims, output_dims, prior, use_bias)
     elif network == 'small_regression':
       model = get_small_regression(input_dims, output_dims, prior, use_bias, vi)
+    elif network == 'logistic':
+      model = get_logistic(input_dims, output_dims, prior, use_bias, vi)
     elif network == 'uci_mlp':
       model = get_uci_mlp(input_dims, 2, prior, use_bias)
     elif network == 'med_mnist':
@@ -1005,6 +1099,5 @@ def get_network(network,
       raise ValueError('Invalid network supplied, got {}'.format(network))
   if network == 'resnet50_keras':
     model = load_keras_resnet50(prior, strategy)
-
 
   return model

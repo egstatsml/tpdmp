@@ -4,9 +4,9 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-bps_f = '/home/XXXXX/data/XXXXX/data/pdmp/uai2023_acceptance_ratio_1_2/mnist_lenet_bps_interpolation/acceptance_ratio.npy'
-cov_f = '/home/XXXXX/data/XXXXX/data/pdmp/uai2023_acceptance_ratio_1_2/mnist_lenet_cov_pbps_interpolation/acceptance_ratio.npy'
-boomerang_f = '/home/XXXXX/data/XXXXX/data/pdmp/uai2023_acceptance_ratio_1_2/mnist_lenet_boomerang_interpolation/acceptance_ratio.npy'
+bps_f = '/home/ethan/data/ethan/data/pdmp/uai2023_acceptance_ratio_1_2/mnist_lenet_bps_interpolation/acceptance_ratio.npy'
+cov_f = '/home/ethan/data/ethan/data/pdmp/uai2023_acceptance_ratio_1_2/mnist_lenet_cov_pbps_interpolation/acceptance_ratio.npy'
+boomerang_f = '/home/ethan/data/ethan/data/pdmp/uai2023_acceptance_ratio_1_2/mnist_lenet_boomerang_interpolation/acceptance_ratio.npy'
 
 
 bps = np.load(bps_f)

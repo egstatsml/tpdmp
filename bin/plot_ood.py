@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 def old():
   """old method I would use"""
   # load in the data sets
-  sgld_dir = '/home/XXXXX/data/XXXXX/data/pdmp/uai2023_sgd/cifar_10_resnet_sgld'
-  boomerang_dir = '/home/XXXXX/data/XXXXX/data/pdmp/uai2023_sgd/cifar_10_resnet_boomerang_interpolation'
+  sgld_dir = '/home/ethan/data/ethan/data/pdmp/uai2023_sgd/cifar_10_resnet_sgld'
+  boomerang_dir = '/home/ethan/data/ethan/data/pdmp/uai2023_sgd/cifar_10_resnet_boomerang_interpolation'
 
   # load in the entropies
   sgld_in_path = os.path.join(sgld_dir, 'cifar_10_entropy.npy')

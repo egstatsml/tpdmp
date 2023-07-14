@@ -77,6 +77,8 @@ from tbnn.pdmp.bps import (BPSKernel, IterBPSKernel, CovPBPSKernel,
 from tbnn.pdmp.poisson_process import (SBPSampler, PSBPSampler,
                                        AdaptivePSBPSampler, AdaptiveSBPSampler,
                                        InterpolationSampler, InterpolationPSampler)
+from tbnn.pdmp.hmc import IterHMCKernel
+
 import tensorflow as tf
 from tbnn.nn.mlp import MLP
 from tbnn.nn.conv import Conv
@@ -632,12 +634,160 @@ def set_variational_dense_or_conv_params(model, layer_idx, param_list, param_idx
   return model, param_idx
 
 
+def set_model_params_hmc(model, param_list):
+  """Apply new params to a model suitable for HMC
+
+  Works similar to methods used for pdmp samplers, except will
+  replace the params instead of just assigning them. This will allow it to
+  work with tensorflow probabilities hmc method.
+
+  When sampling, will need to apply previous params of a model, or sometimes
+  maybe to apply the initial state of model params. This function will take in a
+  list of parameters, parameters of the same format as that returned from
+  `get_model_state`, and update the mode to use this new params.
+
+  Parameters
+  ----------
+  model : keras.Model
+      model/network we are sampling from.
+  param_list : list(tf.Tensor)
+      list of trainable parameters we need to update, basically the one's we are
+      sampling from or optimizing.
+
+  Returns
+  -------
+  keras.Model
+    model with params from `param_list` applied.
+  """
+  # print('look at param list')
+  # print(type(param_list))
+  # for p in param_list:
+  #   print(type(p))
+  param_idx = 0
+  for layer_idx in range(0, len(model.layers)):
+    # if we are using nfnets model, we will need to access the base
+    # sub network which was created with the functional method.
+    if "Functional" == model.layers[layer_idx].__class__.__name__:
+      param_idx = set_nfnet_base_params(model.layers[layer_idx], param_list,
+                                        param_idx)
+    # set model params, but make sure this current layer isn't a flatten or
+    # pooling layer with no params to set
+    elif (isinstance(model.layers[layer_idx], Dense) or
+          isinstance(model.layers[layer_idx], Conv2D) or
+          isinstance(model.layers[layer_idx], ScaledStandardizedConv2D)):
+      model, param_idx = set_dense_or_conv_params_hmc(model, layer_idx, param_list,
+                                                      param_idx)
+    elif isinstance(model.layers[layer_idx], ResNetLayer):
+      model, param_idx = set_resnet_layer_params_hmc(model, layer_idx, param_list,
+                                                     param_idx)
+    elif isinstance(model.layers[layer_idx], FRN):
+      model, param_idx = set_frn_layer_params_hmc(model, layer_idx, param_list,
+                                                  param_idx)
+    else:
+      pass
+      # print('LAYER TYPE = {}, class = {}'.format(
+      #     type(model.layers[layer_idx]), model.layers[layer_idx].__class__))
+    #print('bias after= {}'.format(model.layers[i].bias))
+  return model
+
+
+def set_dense_or_conv_params_hmc(model, layer_idx, param_list, param_idx):
+  """Set params for dense or conv net but with HMC compatability
+
+  Only one function for both conv and dense layers, as they have the same
+  number of parameters and parameter names (kernel and bias).
+
+  Params:
+    model (keras.Model):
+      keras model of network
+    params (list(tf.Varaibles)):
+      list of variables for the model
+    layer_idx (int):
+      index for the current layer in the model
+    param_idx (int):
+      index to tell us the starting point in the list of model parameters to
+    look at.
+
+  Returns
+  -------
+    updated Model with params set, incremented param_idx
+  """
+  # print(f'layer index =  {layer_idx}, param_idx = {param_idx}')
+  # print(
+  #     f'param shape = {model.layers[layer_idx].kernel.shape}, param_shape =   {param_list[param_idx].shape}'
+  # )
+  print(f'param_idx  = {param_idx}')
+  print(f'len param_list  = {len(param_list)}')
+  if len(param_list) == 1:
+    print(param_list[0])
+  model.layers[layer_idx].kernel = param_list[param_idx]
+  # model.layers[layer_idx].kernel = param_list[param_idx]
+  param_idx += 1
+  print(model.layers[layer_idx].use_bias)
+  if (model.layers[layer_idx].use_bias):
+    model.layers[layer_idx].bias = param_list[param_idx]
+    # model.layers[layer_idx].bias = param_list[param_idx]
+    param_idx += 1
+  return model, param_idx
+
+
+def set_resnet_layer_params_hmc(model, layer_idx, param_list, param_idx):
+  """Set params for resnet layers.
+
+  Params:
+    model (keras.Model):
+      keras model of network
+    params (list(tf.Varaibles)):
+      list of variables for the model
+    layer_idx (int):
+      index for the current layer in the model
+    param_idx (int):
+      index to tell us the starting point in the list of model parameters to
+    look at.
+
+  Returns
+  -------
+    updated Model with params set, incremented param_idx.
+  """
+  # update conv params
+  # model, param_idx = set_dense_or_conv_params( model, layer_idx,
+  #                                             param_list, param_idx)
+  #
+  model.layers[layer_idx].conv.kernel = param_list[param_idx]
+  param_idx += 1
+  if (model.layers[layer_idx].conv.use_bias):
+    model.layers[layer_idx].conv.bias = param_list[param_idx]
+    param_idx += 1
+  # now need to update normalisation layer params
+  model.layers[layer_idx].norm.tau = param_list[param_idx]
+  model.layers[layer_idx].norm.gamma = param_list[param_idx + 1]
+  model.layers[layer_idx].norm.beta = param_list[param_idx + 2]
+  # increment param_idx by three
+  param_idx += 3
+  # if(isinstance(model.layers[layer_idx], FRN)):
+  #   model, param_idx = set_frn_layer_params(model, layer_idx,
+  #                                           param_list, param_idx)
+  # else:
+  #   raise NotImplementedError('Currently only supporting FRN normalisation')
+  #
+  return model, param_idx
+
+
+
+
 @tf.function
 def pred_forward_pass(model, param_list, x):
   model = set_model_params(model, param_list)
   out = model(x)
   print(out.shape)
   return out
+
+@tf.function
+def pred_forward_pass_hmc(model, param_list, x):
+  model = set_model_params_hmc(model, param_list)
+  out = model(x)
+  return out
+
 
 
 def bnn_log_likelihood(model):
@@ -889,7 +1039,9 @@ def get_map_iter(iter_target_log_prob_fn,
 @tf.function
 def model_fwd(model, data):
   return model(data, training=False)
-@tf.function
+
+
+# @tf.function
 def distributed_eval_step(model, data, labels, likelihood_fn, test_loss,
                           test_accuracy, strategy):
   replica_results = strategy.run(eval_step,
@@ -907,13 +1059,17 @@ def distributed_eval_step(model, data, labels, likelihood_fn, test_loss,
 
 def eval_step(model, data, labels, likelihood_fn, loss_metric, accuracy_metric):
   logits = model.call(data, training=False)
+  # print(data)
+  # print(labels)
+  # print(logits)
+  print(model.trainable_variables)
   likelihood = likelihood_fn(labels, logits)
   loss_metric.update_state(likelihood)
   accuracy_metric.update_state(labels, logits)
   return logits
 
 
-def accuracy_loss_fn(model, ds, likelihood_fn, test_loss, test_accuracy, strategy, num_train_eval=50):
+def accuracy_loss_fn(model, ds, likelihood_fn, test_loss, test_accuracy, strategy, num_train_eval=1):
   """Get some evaluation metrics from training.
 
   Want to be able to get some summary stats from my model performance as I go.
@@ -963,6 +1119,7 @@ def accuracy_loss_fn(model, ds, likelihood_fn, test_loss, test_accuracy, strateg
   if isinstance(ds, (tf.data.Dataset, tf.distribute.DistributedDataset)):
     # is our testing set, so let's iterate over it all.
     for inputs_batch, labels_batch in ds:
+      print(inputs_batch.shape)
       logits = distributed_eval_step(model, inputs_batch, labels_batch, likelihood_fn,
                                      test_loss, test_accuracy,
                                      strategy)
@@ -981,6 +1138,7 @@ def accuracy_loss_fn(model, ds, likelihood_fn, test_loss, test_accuracy, strateg
     print('in eval for training')
     for _ in range(0, num_train_eval):
       inputs_batch, labels_batch = ds.next()
+      # print(inputs_batch.shape)
       logits = distributed_eval_step(model, inputs_batch, labels_batch, likelihood_fn, test_loss, test_accuracy,
                                      strategy)
       logits_list.extend(logits)
@@ -1007,7 +1165,7 @@ def get_map_test(distributed_opt_step,
                  strategy,
                  test_dataset=None,
                  num_iters=2000,
-                 eval_step=1000,
+                 eval_step=4999,
                  tboard_iter=20):
   """obtain a MAP estimate for method with iteraor over data.
 
@@ -1055,7 +1213,7 @@ def get_map_test(distributed_opt_step,
   # creating metrics for evaluation steps
   with strategy.scope():
     test_loss = tf.keras.metrics.Sum(name='test_loss')
-    test_accuracy = tf.keras.metrics.CategoricalAccuracy(name='test_accuracy')
+    test_accuracy = tf.keras.metrics.MeanSquaredError(name='test_accuracy')
     train_loss = tf.keras.metrics.Sum(name='train_loss')
     train_accuracy = tf.keras.metrics.CategoricalAccuracy(name='train_accuracy')
 
@@ -1063,6 +1221,10 @@ def get_map_test(distributed_opt_step,
   test_dataset_distributed = strategy.experimental_distribute_dataset(test_dataset)
 
   def eval_fn():
+    train_loss.reset_states()
+    train_accuracy.reset_states()
+    test_loss.reset_states()
+    test_accuracy.reset_states()
     # loss_train, neg_log_likelihood_train, neg_log_prior_train, accuracy_train = accuracy_loss_fn(
     #     model, training_iter, likelihood_fn, strategy)
     # print(
@@ -1073,16 +1235,12 @@ def get_map_test(distributed_opt_step,
     accuracy_loss_fn(
       model, training_iter, likelihood_fn, train_loss, train_accuracy, strategy)
     print('Training Data:  Neg_ll = {}, Accuracy = {}'.format(train_loss.result(),
-                                                             train_accuracy.result()))
+                                                              train_accuracy.result()))
     accuracy_loss_fn(
       model, test_dataset_distributed, likelihood_fn, test_loss, test_accuracy, strategy)
     print('Testing Data:  Neg_ll = {}, Accuracy = {}'.format(test_loss.result(),
                                                              test_accuracy.result()))
     print('', flush=True)
-    train_loss.reset_states()
-    train_accuracy.reset_states()
-    test_loss.reset_states()
-    test_accuracy.reset_states()
 
   summary_writer = tf.summary.create_file_writer('logs/')
   for train_step_count in tqdm(range(num_iters)):
@@ -1098,6 +1256,11 @@ def get_map_test(distributed_opt_step,
           'prior',
           tf.reduce_sum(model.losses),
           step=train_step_count)
+        tf.summary.scalar(
+          'test_neg_ll',
+          test_loss.result(),
+          step=train_step_count)
+
 
 
     if train_step_count % eval_step == 0 and train_step_count > 0:
@@ -1870,11 +2033,19 @@ def bps_iter_main(model,
                                           data_dimension_dict['out_dim'],
                                           plot_results, plt_dims)
 
+@tf.function
+def hmc_one_step(state, kernel, prev_kernel_results):
+  next_state, next_kernel_results = kernel.one_step(state, prev_kernel_results)
+  return next_state, next_kernel_results
+
+
 
 def hmc_iter_main(model,
                   num_results,
                   num_burnin_steps,
                   out_dir,
+                  step_size,
+                  leapfrog_steps,
                   bnn_joint_log_prob,
                   map_initial_state,
                   training_iter,
@@ -1884,7 +2055,7 @@ def hmc_iter_main(model,
                   data_dimension_dict,
                   plot_results=True,
                   run_eval=True,
-                  num_steps_between_results=0):
+                  num_steps_between_results=1):
   """main method for running HMC on model"""
   print('running hmc')
   start_time = time.time()
@@ -1892,30 +2063,48 @@ def hmc_iter_main(model,
   print('num_params = {}'.format(num_params))
   # num_samples_per_loop = np.int32(num_results / num_loops)
   # get the log prob from the parent log prob fn
-  kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=bnn_joint_log_prob,
-                                          step_size=0.001,
-                                          num_leapfrog_steps=10,
-                                          store_parameters_in_results=True)
+  # kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=bnn_joint_log_prob,
+  #                                         step_size=0.001,
+  #                                         num_leapfrog_steps=10,
+  #                                         store_parameters_in_results=True)
+  kernel = IterHMCKernel(parent_target_log_prob_fn=bnn_joint_log_prob,
+                         step_size=step_size,
+                         num_leapfrog_steps=leapfrog_steps,
+                         store_parameters_in_results=True)
   # convert the init state into a tensor first
-  init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  trace_fn = lambda _, pkr: pkr.is_accepted
+  next_state = [tf.convert_to_tensor(x) for x in map_initial_state]
+  # initialise the chain for hmc
+  # for now will just be empty list of lists
+  hmc_chain = [[] for i in range(0, len(next_state))]
+  print(hmc_chain)
+  trace_fn = lambda _, pkr: pkr.log_acceptance_correction
   # trace_fn = lambda _, pkr:  pkr.log_acceptance_correction
   # run bootstrap here to get the initial state for burnin
   # this allows us to start sampling at each loop exactly where we left off
-  kernel_previous_results = kernel.bootstrap_results(init_state)
-  # print('loop iter = {}'.format(loop_iter))
-  hmc_results = graph_hmc(num_results=num_results,
-                          # num_warmup=num_burnin_steps,
-                          current_state=init_state,
-                          kernel=kernel,
-                          previous_kernel_results=kernel_previous_results,
-                          return_final_kernel_results=True,
-                          num_steps_between_results=num_steps_between_results,
-                          trace_fn=trace_fn)
+  kernel_results = kernel.bootstrap_results(next_state)
+  start_time = time.time()
+  # warmup
+  for i in range(0, num_burnin_steps):
+    next_state, kernel_results = hmc_one_step(next_state, kernel,
+                                              kernel_results)
 
+  print('end warmup')
+  end_warmup_time = time.time()
+  print(f'Warmup time = {end_warmup_time - start_time}')
+  # sampling
+  for i in range(0, int(num_results * num_steps_between_results)):
+    next_state, kernel_results = hmc_one_step(next_state, kernel,
+                                              kernel_results)
+    if i % num_steps_between_results == 0:
+      # add the found state to the hmc chain
+      for i in range(0, len(next_state)):
+        hmc_chain[i].append(next_state[i])
+
+  end_sampling_time = time.time()
+  print(f'total sampling time = {end_sampling_time - start_time}')
   # extract the chain and the final kernel results
-  hmc_chain = hmc_results.all_states
-  kernel_previous_results = hmc_results.final_kernel_results
+  # want to convert the lists of lists to an array
+  hmc_chain = [tf.stack(x, axis=0) for x in hmc_chain]
   # save these samples to file
   save_chain(hmc_chain, out_dir, 0)
   # get the final state of the chain from the previous loop iter
@@ -1948,7 +2137,8 @@ def hmc_iter_main(model,
                                           test_ds, test_orig_ds,
                                           data_dimension_dict['out_dim'],
                                           data_dimension_dict['out_dim'],
-                                          plot_results, plt_dims)
+                                          plot_results, plt_dims,
+                                          name='hmc')
 
 def sgld_iter_main(model,
                    num_results,
@@ -2625,7 +2815,7 @@ def boomerang_test_iter_main(model,
     hessian_diag_batch = hessian_fn()
     # add this batch hessian to the sum over all data points next
     hessian_diag = [h + b for h, b in zip(hessian_diag, hessian_diag_batch)]
-  var_preconditioner = [0.001 / tf.math.abs(h) for h in hessian_diag]
+  var_preconditioner = [std_ref / tf.math.abs(h) for h in hessian_diag]
   # var_preconditioner = [tf.math.abs(h) for h in hessian_diag]
 
   # scale it by the layer level mean
@@ -2957,19 +3147,20 @@ def plot_regression_pred_posterior(model, chain, num_results, X_train, y_train,
   plt.figure()
   plt.scatter(X_train, y_train, color='b', alpha=0.15)
   pred_idx = 0
-
+  # need to specify pred forward pass method
+  # if is hmc, need to use the set_model_params_hmc method
+  if name == 'hmc':
+    pred_fn = pred_forward_pass_hmc
+  else:
+    pred_fn = pred_forward_pass
   for mcmc_idx in sample_idx:
-    param_list_a = [x[mcmc_idx, ...] for x in chain]
-    param_list_b = [x[mcmc_idx + 1, ...] for x in chain]
-    # param_list = [(a + b) / 2.0 for a, b in zip(param_list_a, param_list_b)]
-    param_list = param_list_a
-
-    pred[pred_idx, :] = pred_forward_pass(model, param_list,
-                                          X_test.astype(
+    param_list = [x[mcmc_idx, ...] for x in chain]
+    pred[pred_idx, :] = pred_fn(model, param_list,
+                                X_test.astype(
                                               np.float32)).numpy().ravel().astype(np.float64)
     plt.plot(X_test, pred[pred_idx, :], alpha=0.05, color='k')
     pred_idx += 1
-  # plt.axis('off')
+  plt.axis('off')
   print('saving images to {}'.format(out_dir))
   plt.savefig(os.path.join(out_dir, 'pred.png'))
   plt.savefig(os.path.join(out_dir, 'pred.pdf'), bbox_inches='tight')
@@ -3080,6 +3271,7 @@ def test_plot_regression_pred_posterior(model, chain, velocity, mean, time,
 
 def plot_logistic_pred_posterior(model, chain, num_results, X_train, y_train,
                                  X_test, y_test, out_dir, name):
+  print('plotting logistic')
   idx = 0
   num_plot = np.min([num_results, 10])
   pred_array = np.zeros([num_plot, y_test.size])
@@ -3155,6 +3347,7 @@ def plot_logistic_pred_posterior(model, chain, num_results, X_train, y_train,
              color='r')
   cbar = plt.colorbar(contour, ax=ax)
   _ = ax.set(xlim=(-1.5, 1.5), ylim=(-1.5, 1.5), xlabel='X', ylabel='Y')
+  print('saving fig')
   cbar.ax.set_ylabel('Uncertainty (posterior predictive standard deviation)')
   plt.savefig(os.path.join(out_dir, 'grid_var_logistic_' + name + '.png'))
   plt.savefig(os.path.join(out_dir, 'grid_var_logistic_' + name + '.pdf'))
@@ -3298,8 +3491,13 @@ def pred_eval_fn(model,
                  dataset,
                  num_samples=None,
                  num_classes=10,
-                 final_activation=tf.keras.activations.softmax):
+                 final_activation=tf.keras.activations.softmax,
+                 name='pdmp'):
   """finds the mean in the predictive posterior"""
+  if name == 'hmc':
+    pred_fn = pred_forward_pass_hmc
+  else:
+    pred_fn = pred_forward_pass
   # get the batch size
   batch_size = next(iter(dataset))[0].shape[0]
   # if num samples isnt set, make it the number of samples in the chain
@@ -3320,8 +3518,8 @@ def pred_eval_fn(model,
       # now sample over the posterior samples of interest
       # pred_eval_array[mcmc_idx, image_idx, ...] = final_activation(
       # pred_forward_pass(model, param_list, image)).numpy()
-      pred = final_activation(pred_forward_pass(model, param_list,
-                                                images)).numpy()
+      pred = final_activation(pred_fn(model, param_list,
+                                      images)).numpy()
       pred_samples_list.append(pred)
     # let's add all the predicts from each sample for this batch of images to a single array now
     # using stack to create a new index for the samples
@@ -3454,7 +3652,8 @@ def eval_iter_chain(model: keras.Model,
                     dataset: tf.data.Dataset,
                     num_classes: int = 10,
                     data_desc_str: str = 'test',
-                    final_activation: callable = tf.keras.activations.softmax):
+                    final_activation: callable = tf.keras.activations.softmax,
+                    name='pdmp'):
   """performs eval on data supplied.
 
   Is designed so that can call a single eval function and just
@@ -3494,7 +3693,8 @@ def eval_iter_chain(model: keras.Model,
                                  chain,
                                  dataset,
                                  num_classes=num_classes,
-                                 final_activation=final_activation)
+                                 final_activation=final_activation,
+                                 name=name)
     pred_list.append(preds)
   print("hereee", [x.shape for x in pred_list])
   pred_posterior = np.concatenate(pred_list, axis=0)
@@ -3535,7 +3735,8 @@ def eval_plot_image_iter_pred_posterior(
     num_classes,
     plot_results,
     plt_dims=[28, 28],
-    final_activation=tf.keras.activations.softmax):
+    final_activation=tf.keras.activations.softmax,
+    name='pdmp'):
   """performs eval, and will plot pred posterior if needed"""
   print('numm classes = {}'.format(num_classes))
   (test_pred_posterior, test_pred_mean_array, test_classification,
@@ -3543,7 +3744,8 @@ def eval_plot_image_iter_pred_posterior(
                                   save_dir,
                                   test_ds,
                                   num_classes=num_classes,
-                                  data_desc_str='test')
+                                  data_desc_str='test',
+                                  name=name)
   # lets save the predictive posterior to file and also the mean classification as well
   np.save(os.path.join(save_dir, 'test_pred_posterior.npy'),
           test_pred_posterior)
