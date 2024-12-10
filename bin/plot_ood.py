@@ -31,7 +31,6 @@ def old():
   plt.xlabel('entropy')
   plt.savefig('in_entropy.pdf', bbox_inches='tight')
   plt.clf()
-
   plt.hist(sgld_out, 100, density=True, alpha=0.9, color=sgld_color, label='SGLD')
   plt.hist(boomerang_out, 100, density=True, alpha=0.8, color=boomerang_color, label='Boomerang')
   plt.xlabel('entropy')
@@ -59,7 +58,6 @@ def main(args):
   sampler = get_sampler(args.out_dir)
   in_data =  np.load(os.path.join(args.out_dir, f'{args.in_data}_entropy.npy'))
   out_data =  np.load(os.path.join(args.out_dir, f'{args.out_data}_entropy.npy'))
-
   in_color = '#7287fd'
   out_color = '#dd7878'
   plt.figure()
@@ -83,5 +81,5 @@ if __name__ == '__main__':
                       default='./out',
                       help='out directory where data is saved')
   args = parser.parse_args(sys.argv[1:])
-  # main(args)
-  old()
+  main(args)
+  # old()

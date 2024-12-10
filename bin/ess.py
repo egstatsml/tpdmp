@@ -8,9 +8,6 @@ import numpy as np
 from tqdm import tqdm
 import tensorflow_probability as tfp
 from tensorflow import keras
-from tensorflow.keras.layers import Dense, Conv2D,  MaxPool2D, Flatten, GlobalAveragePooling2D,  BatchNormalization, Layer, Add
-from tbnn.pdmp.bps import BPSKernel, IterBPSKernel, CovPBPSKernel, IterCovPBPSKernel, PBPSKernel, IterPBPSKernel, BoomerangKernel, BoomerangIterKernel
-from tbnn.pdmp.poisson_process import SBPSampler, PSBPSampler, AdaptivePSBPSampler, AdaptiveSBPSampler
 
 import tensorflow as tf
 from tbnn.nn.mlp import MLP
@@ -26,30 +23,43 @@ from sklearn.metrics import accuracy_score
 from tbnn.pdmp.resnet import ResNetLayer
 from tbnn.pdmp.frn import FRN
 
+
+from sklearn.decomposition import PCA
+
 tfd = tfp.distributions
 
-save_dir = '/home/XXXXX/data/XXXXX/XXXXX_22/pdmp/mnist_lenet_bps'
-chain_files = glob(os.path.join(save_dir, 'chain_*.pkl'))
-idx = 0
-print(chain_files)
-# load in the first chain file to get the dimensions of everything
-with open(chain_files[0], 'rb') as f:
-    chain = pickle.load(f)
-len_params = len(chain)
-samples = [[] for i in range(0, len_params)]
-for chain_file in chain_files:
-    with open(chain_file, 'rb') as f:
-        print(chain_file)
-        chain = pickle.load(f)
-        print(chain[0].shape[0])
-    for i in range(0, len_params):
-        # only want the i'th index at the moment
-        samples[i].append(np.array(chain[i]))
+data_models = ['cifar_100_resnet', 'cifar_10_resnet', 'svhn_resnet',
+              'mnist_lenet', 'fashion_mnist_lenet']
 
-# now want to concatenate them all into a single array
-samples = [np.concatenate(samples[i], axis=0) for i in range(0, len_params)]
-# now find the ess and put it in one big array
-ess = np.concatenate([np.ravel(tfp.mcmc.effective_sample_size(x)) for x in samples])
-print(np.min(ess))
-print(np.max(ess))
-print(np.mean(ess))
+save_dirs = ['outdir/XXXX_bps_interpolation',
+             'outdir/XXXX_cov_pbps_interpolation',
+             'outdir/XXXX_boomerang_interpolation',
+             'outdir/XXXX_hmc',
+             'outdir/XXXX_sgld',
+             'outdir/XXXX_sgld_no_decay']
+
+
+for data_model in data_models:
+  print(f'Data model = {data_model}\n')
+  for i in range(len(save_dirs)):
+    try:
+      save_dir = save_dirs[i]
+      # replace the XXXX with the data model
+      save_dir = save_dir.replace('XXXX', data_model)
+      print(f'save dir = {save_dir}')
+      chain_files = glob(os.path.join(save_dir, 'chain_*.pkl'))
+      idx = 0
+      print(chain_files)
+      # load in the first chain file to get the dimensions of everything
+      with open(chain_files[0], 'rb') as f:
+          chain = pickle.load(f)
+
+      samples = np.concatenate([x.numpy().reshape(x.shape[0], -1) for x in chain], axis=1)
+      samples = samples.reshape(samples.shape[0], -1)
+      pca = PCA(whiten=True).fit(samples)
+      transformed = pca.transform(samples)
+      ess = tfp.mcmc.effective_sample_size(transformed)
+      print(f' ess max = {ess[0]}, ess second = {ess[1]}, ess min {ess[-1]}')
+      var = np.concatenate([np.ravel(np.var(x)) for x in chain])
+    except Exception as e:
+      print(f'error on {save_dir}')

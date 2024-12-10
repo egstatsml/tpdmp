@@ -128,7 +128,7 @@ def main(args):
 
   # load in the prediction data, specifically the pred posterior
   pred_posterior = np.load(
-    os.path.join(args.out_dir, 'test_pred_posterior.npy'))
+    os.path.join(args.out_dir, f'{args.data}_test_pred_posterior.npy'))
   # check to see if softmax needs to be applied
   if np.max(pred_posterior) > 1.0 or np.min(pred_posterior) < 0.0:
     pred_posterior = tf.nn.softmax(pred_posterior).numpy()

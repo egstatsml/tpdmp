@@ -71,12 +71,11 @@ from tensorflow.keras.layers import (Dense, Conv2D, MaxPool2D, Flatten,
 #                                            Convolutional2DReparameterization)
 
 from tbnn.pdmp.nfnets import ScaledStandardizedConv2D
-from tbnn.pdmp.bps import (BPSKernel, IterBPSKernel, CovPBPSKernel,
+from tbnn.pdmp.pdmp import (BPSKernel, IterBPSKernel, CovPBPSKernel,
                            IterCovPBPSKernel, PBPSKernel, IterPBPSKernel,
                            BoomerangKernel, BoomerangIterKernel)
-from tbnn.pdmp.poisson_process import (SBPSampler, PSBPSampler,
-                                       AdaptivePSBPSampler, AdaptiveSBPSampler,
-                                       InterpolationSampler, InterpolationPSampler)
+from tbnn.pdmp.poisson_process import (InterpolationSampler, InterpolationBoomSampler,
+                                       InterpolationPSampler)
 from tbnn.pdmp.hmc import IterHMCKernel
 
 import tensorflow as tf
@@ -92,6 +91,7 @@ from sklearn.metrics import accuracy_score
 from tbnn.pdmp.resnet import ResNetLayer
 # from tbnn.pdmp.resnet50 import ResNet50Block, ResNetShortcut
 from tbnn.pdmp.frn import FRN
+from tbnn.pdmp.train_utils import *
 
 tfd = tfp.distributions
 
@@ -810,21 +810,12 @@ def bnn_joint_log_prob_fn(model, weight_prior_fns, bias_prior_fns, X, y):
       print(args)
       weights_list = args[::2]
       biases_list = args[1::2]
-      # adding prior component from the joint dist.
-      #lp = sum(
-      #  [tf.reduce_sum(fn.log_prob(w)) for fn, w in zip(weight_prior_fns, weights_list)]
-      #)
-      #lp += sum([tf.reduce_sum(fn.log_prob(b)) for fn, b in zip(bias_prior_fns, biases_list)])
       # set the model weights and bias params
       m = set_model_params(model, weights_list, biases_list)
       # likelihood of predicted labels
       log_likelihood_fn = bnn_log_likelihood(m)
       print(log_likelihood_fn)
       log_likelihood_dist = log_likelihood_fn(X)
-      #print('X shape = {}'.format(X.shape))
-      #print('y shape = {}'.format(y.shape))
-      #print('log likelihood dist = {}'.format(log_likelihood_dist))
-      #print('log likelihood shape = {}'.format(log_likelihood_dist.log_prob(y).shape))
       # add the log likelihood now
       lp = tf.reduce_sum(log_likelihood_dist.log_prob(y))
       return lp
@@ -860,10 +851,6 @@ def bnn_map_joint_log_prob_fn(model, weight_prior_fns, bias_prior_fns, X, y):
       log_likelihood_fn = bnn_log_likelihood(m)
       print(log_likelihood_fn)
       log_likelihood_dist = log_likelihood_fn(X)
-      #print('X shape = {}'.format(X.shape))
-      #print('y shape = {}'.format(y.shape))
-      #print('log likelihood dist = {}'.format(log_likelihood_dist))
-      #print('log likelihood shape = {}'.format(log_likelihood_dist.log_prob(y).shape))
       # add the log likelihood now
       lp += tf.reduce_sum(log_likelihood_dist.log_prob(y))
       return lp
@@ -948,11 +935,6 @@ def get_map_iter(iter_target_log_prob_fn,
                  y_train=None):
   """obtain a MAP estimate for method with iteraor over data"""
   if opt_str == 'sgd':
-    # learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
-    #   initial_lr,
-    #   decay_steps=decay_steps,
-    #   decay_rate=decay_rate,
-    #   staircase=True)
     mirrored_strategy = tf.distribute.MirroredStrategy()
     with mirrored_strategy.scope():
       boundaries = [5000, 10000, 15000, 20000]
@@ -1005,10 +987,7 @@ def get_map_iter(iter_target_log_prob_fn,
           format(loss_test, neg_log_likelihood_test, neg_log_prior_test,
                  accuracy_test))
     print('', flush=True)
-    # pred = tf.argmax(model.predict(X), axis=1)
-    # accuracy = accuracy_score(np.argmax(y, axis=1),
-    #                           pred, normalize=True)
-    # print('Accuracy at step {} = {}'.format(i, accuracy))
+
 
   @tf.function
   def minimize():
@@ -1059,9 +1038,6 @@ def distributed_eval_step(model, data, labels, likelihood_fn, test_loss,
 
 def eval_step(model, data, labels, likelihood_fn, loss_metric, accuracy_metric):
   logits = model.call(data, training=False)
-  # print(data)
-  # print(labels)
-  # print(logits)
   print(model.trainable_variables)
   likelihood = likelihood_fn(labels, logits)
   loss_metric.update_state(likelihood)
@@ -1123,14 +1099,6 @@ def accuracy_loss_fn(model, ds, likelihood_fn, test_loss, test_accuracy, strateg
       logits = distributed_eval_step(model, inputs_batch, labels_batch, likelihood_fn,
                                      test_loss, test_accuracy,
                                      strategy)
-      # logits_gathered = strategy.experimental_local_results(logits)
-      # print(logits_gathered)
-      # print(inputs_batch.shape)
-      # print([x.shape for x in logits])
-
-      # print(labels_batch.shape)
-      # logits_list.extend(logits)
-      # labels_list.extend(labels_batch)
   else:
     # is our training set, and thus is an iterator, so we can't use the above logic
     # since out method for training and sampling uses an iterator made over a dataset
@@ -1225,13 +1193,6 @@ def get_map_test(distributed_opt_step,
     train_accuracy.reset_states()
     test_loss.reset_states()
     test_accuracy.reset_states()
-    # loss_train, neg_log_likelihood_train, neg_log_prior_train, accuracy_train = accuracy_loss_fn(
-    #     model, training_iter, likelihood_fn, strategy)
-    # print(
-    #     'Training Data: loss = {}, Neg_ll = {}, Neg_prior = {}, Accuracy = {}'.
-    #     format(loss_train, neg_log_likelihood_train, neg_log_prior_train,
-    #            accuracy_train))
-    # loss_test, neg_log_likelihood_test, neg_log_prior_test, accuracy_test = accuracy_loss_fn(
     accuracy_loss_fn(
       model, training_iter, likelihood_fn, train_loss, train_accuracy, strategy)
     print('Training Data:  Neg_ll = {}, Accuracy = {}'.format(train_loss.result(),
@@ -1250,7 +1211,6 @@ def get_map_test(distributed_opt_step,
         tf.summary.scalar(
           'learning_rate',
           optimizer.learning_rate,
-          # optimizer._decayed_lr(tf.float32),
           step=train_step_count)
         tf.summary.scalar(
           'prior',
@@ -1269,12 +1229,6 @@ def get_map_test(distributed_opt_step,
 
 
 def trace_fn(current_state, results, summary_freq=100):
-  #step = results.step
-  #with tf.summary.record_if(tf.equal(step % summary_freq, 0)):
-  #    for idx, tensor in enumerate(current_state, 1):
-  #        count = str(math.ceil(idx / 2))
-  #        name = "weights_" if idx % 2 == 0 else "biases_" + count
-  #        tf.summary.histogram(name, tensor, step=tf.cast(step, tf.int64))
   return results
 
 
@@ -1371,94 +1325,7 @@ def find_num_iters_and_loops(num_params,
   num_loops = np.min([
       np.ceil(num_samples / num_samples_per_loop).astype(np.int32), num_samples
   ])
-  # now find the number of samples per loop we can get
-  print(num_samples_per_loop)
-  print(num_loops)
-  print('TODO! fix this!!')
-  time.sleep(10)
-  # num_samples_per_loop = np.floor(num_samples / num_loops).astype(np.int32)
   return num_samples, np.int32(1)
-  # return np.int32(200), np.int32(10)
-  # return num_samples_per_loop, num_loops
-
-
-def bps_main(model,
-             ipp_sampler_str,
-             likelihood_str,
-             lambda_ref,
-             num_results,
-             num_burnin_steps,
-             out_dir,
-             bnn_neg_joint_log_prob,
-             map_initial_state,
-             X_train,
-             y_train,
-             X_test,
-             y_test,
-             batch_size,
-             data_size,
-             data_dimension_dict,
-             plot_results=True,
-             num_steps_between_results=0):
-  """main method for running BPS on model"""
-  print('running bps')
-  start_time = time.time()
-  print(X_train.shape, y_train.shape, X_test.shape, y_test.shape)
-  if ipp_sampler_str == 'adaptive':
-    ipp_sampler = AdaptiveSBPSampler
-  else:
-    ipp_sampler = SBPSampler
-  kernel = BPSKernel(target_log_prob_fn=bnn_neg_joint_log_prob,
-                     store_parameters_in_results=True,
-                     ipp_sampler=ipp_sampler,
-                     batch_size=batch_size,
-                     data_size=data_size,
-                     lambda_ref=lambda_ref)
-  # convert the init state into a tensor first
-  init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # creating the trace function
-  trace_fn = lambda _, pkr: pkr.acceptance_ratio
-  # BURNIN PHASE
-  # start sampling for burnin, and then discard these samples
-  bps_chain, _ = graph_hmc(num_results=num_burnin_steps,
-                           current_state=init_state,
-                           kernel=kernel,
-                           trace_fn=trace_fn)
-  # get the final state of the chain from the previous burnin iter
-  init_state = [x[-1] for x in bps_chain]
-  end_warmup_time = time.time()
-  print('time warmup = {}'.format(end_warmup_time - start_time))
-  # SAMPLING PHASE
-  # now loop over the actual samples from (hopefully) the posterior
-  bps_results, acceptance_ratio = graph_hmc(
-      num_results=num_results,
-      current_state=init_state,
-      num_steps_between_results=num_steps_between_results,
-      kernel=kernel,
-      trace_fn=trace_fn)
-  #    return_final_kernel_results=True,
-  print('acceptance_ratio = {}'.format(acceptance_ratio))
-  print(type(acceptance_ratio))
-  print('num acceptance_ratio > 1 = {}'.format(np.sum(
-      (acceptance_ratio > 1.0))))
-  bps_chain = bps_results
-  # save these samples to file
-  save_chain(bps_chain, out_dir)
-  print('finished sampling')
-  end_sampling_time = time.time()
-  print('total sampling time = {}'.format(end_sampling_time - start_time))
-  # plot the results if specified to
-  if (plot_results):
-    # if the output is one dimensional, will be regression task so plot using
-    # regression methods
-    if (y_test.shape[-1] == 1):
-      plot_pred_posterior(model, bps_chain, likelihood_str, num_results,
-                          X_train, y_train, X_test, y_test, out_dir, 'bps')
-    # otherwise will be classification task, so plot using those methods
-    else:
-      plot_image_pred_posterior(model, bps_chain, num_results, X_train, y_train,
-                                X_test, y_test, 'bps')
-
 
 def boomerang_gaussian_measure(state, preconditioner, mean):
   # get the inverse of the preconditioner
@@ -1467,9 +1334,7 @@ def boomerang_gaussian_measure(state, preconditioner, mean):
       tf.reduce_sum(tf.square(s - m) / (2.0 * p))
       for s, m, p in zip(state, mean, preconditioner)
   ])
-  # now multiply by 1/2 and take negative
-  # return -1.0 * state_part
-  return 0.5 * state_part
+  return state_part
 
 
 def boomerang_neg_log_likelihood(model, likelihood_fn, X, y):
@@ -1479,7 +1344,6 @@ def boomerang_neg_log_likelihood(model, likelihood_fn, X, y):
   # add the log likelihood now
   lp = tf.reduce_sum(log_likelihood_dist.log_prob(y))
   return lp
-  # return -1.0 * lp
 
 
 def boomerang_bnn_neg_joint_log_prob_fn(model, likelihood_fn, X, y,
@@ -1496,8 +1360,10 @@ def boomerang_bnn_neg_joint_log_prob_fn(model, likelihood_fn, X, y,
       # these are stored within the models `losses` variable
       gaussian_measure = boomerang_gaussian_measure(param_list, preconditioner,
                                                     mean)
+
+      neg_lp = tf.reduce_sum(m.losses)
       # add them together for the total loss
-      return neg_ll + gaussian_measure
+      return neg_ll + gaussian_measure + neg_lp
 
   return _fn
 
@@ -1508,11 +1374,13 @@ def boomerang_one_step(state, kernel, prev_kernel_results):
   return next_state, next_kernel_results
 
 
-def neg_boomerang_joint(model, likelihood_fn, X, y, param_list, preconditioner,
+def neg_boomerang_joint(model, likelihood_fn, X, y,
+                        dataset_size, batch_size,
+                        param_list, preconditioner,
                         mean):
   # neg log likelihood of predicted labels
   pred = model(X)
-  neg_ll = likelihood_fn(y, pred)
+  neg_ll = dataset_size / batch_size * likelihood_fn(y, pred)
   # these are stored within the models `losses` variable
   gaussian_measure = boomerang_gaussian_measure(param_list, preconditioner,
                                                 mean)
@@ -1520,26 +1388,23 @@ def neg_boomerang_joint(model, likelihood_fn, X, y, param_list, preconditioner,
   return neg_ll + gaussian_measure
 
 
-def gradient_boomerang_step(model, likelihood_fn, X, y, param_list,
+def gradient_boomerang_step(model, likelihood_fn, X, y,
+                            dataset_size, batch_size,
+                            param_list,
                             preconditioner, mean):
   # set the model params
-  # print('trainable vars before setting them')
-  # print(model.trainable_variables[-1].numpy())
   m = set_model_params(model, param_list)
-  # print('trainable vars after setting them')
-  # print(model.trainable_variables[-1].numpy())
-  # time.sleep(10)
-  # print(model.trainable_variables[-1])
   with tf.GradientTape() as tape:
-    # for i in range(0, len(param_list)):
-    #   tape.watch(param_list[i])
-    neg_log_prob = neg_boomerang_joint(m, likelihood_fn, X, y, param_list,
+    neg_log_prob = neg_boomerang_joint(m, likelihood_fn, X, y,
+                                       dataset_size, batch_size,
+                                       param_list,
                                        preconditioner, mean)
   gradients = tape.gradient(neg_log_prob, m.trainable_variables)
   return gradients
 
 
 def distributed_gradient_boomerang_step(model, likelihood_fn, X, y,
+                                        dataset_size, batch_size,
                                         preconditioner, mean, strategy):
 
   def _fn(param_list):
@@ -1549,6 +1414,8 @@ def distributed_gradient_boomerang_step(model, likelihood_fn, X, y,
                                             likelihood_fn,
                                             X,
                                             y,
+                                            dataset_size,
+                                            batch_size,
                                             param_list,
                                             preconditioner,
                                             mean,
@@ -1560,322 +1427,20 @@ def distributed_gradient_boomerang_step(model, likelihood_fn, X, y,
   return _fn
 
 
-def iter_grad_boomerang_fn(model, likelihood_fn, dataset_iter, preconditioner,
+def iter_grad_boomerang_fn(model, likelihood_fn, dataset_iter,
+                           data_size, batch_size,
+                           preconditioner,
                            mean, strategy):
 
+  dataset_size = tf.convert_to_tensor(data_size, dtype=tf.float32)
+  batch_size = tf.convert_to_tensor(batch_size, dtype=tf.float32)
   def _fn():
     X, y = dataset_iter.next()
-    # print(f'X = {X}, y = {y}')
-    # timepy.sleep(10)
     return distributed_gradient_boomerang_step(model, likelihood_fn, X, y,
+                                               dataset_size, batch_size,
                                                preconditioner, mean, strategy)
 
   return _fn
-
-
-def boomerang_main(model,
-                   ipp_sampler_str,
-                   likelihood_str,
-                   lambda_ref,
-                   num_results,
-                   num_burnin_steps,
-                   out_dir,
-                   bnn_neg_joint_log_prob,
-                   likelihood_fn,
-                   map_initial_state,
-                   X_train,
-                   y_train,
-                   X_test,
-                   y_test,
-                   batch_size,
-                   data_size,
-                   data_dimension_dict,
-                   plot_results=True,
-                   num_steps_between_results=0):
-  """main method for running BPS on model"""
-  print('running boomerang')
-  start_time = time.time()
-  print(X_train.shape, y_train.shape, X_test.shape, y_test.shape)
-  if ipp_sampler_str == 'adaptive':
-    ipp_sampler = AdaptiveSBPSampler
-  else:
-    ipp_sampler = SBPSampler
-  kernel = BPSKernel(target_log_prob_fn=bnn_neg_joint_log_prob,
-                     store_parameters_in_results=True,
-                     ipp_sampler=ipp_sampler,
-                     batch_size=batch_size,
-                     data_size=data_size,
-                     lambda_ref=lambda_ref)
-  # convert the init state into a tensor first
-  init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # saving another copy that will be updated periodically during adaptive
-  # warmup stage
-  next_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # similar thing to get initial kernel results stage
-  kernel_results = kernel.bootstrap_results(init_state)
-  # creating the trace function
-  trace_fn = lambda _, pkr: pkr.acceptance_ratio
-  # BURNIN PHASE
-  # start sampling for burnin, and then discard these samples
-  running_S = [tf.ones_like(x) for x in init_state]
-  # to hold the current and the previous values needed for only variance
-  # estimation
-  # similar for running mean
-  running_mean = [tf.zeros_like(x) for x in init_state]
-  delta1 = [tf.zeros_like(x) for x in init_state]
-  delta2 = [tf.zeros_like(x) for x in init_state]
-  M2 = [tf.zeros_like(x) for x in init_state]
-  for i in range(0, num_burnin_steps):
-    next_state, kernel_results = boomerang_one_step(next_state, kernel,
-                                                    kernel_results)
-    # now get running variance appro  x
-    delta1 = [x - m for x, m in zip(next_state, running_mean)]
-    # first need running mean approx
-    running_mean = [(x + d) / (i + 1) for x, d in zip(next_state, delta1)]
-    # recompute second delta with updated mean, needed for M2 for variance later on
-    delta2 = [x - m for x, m in zip(next_state, running_mean)]
-    M2 = [M + d1 * d2 for M, d1, d2 in zip(M2, delta1, delta2)]
-
-  # can now get the variance calc
-  var_preconditioner = [M / num_burnin_steps for M in M2]
-  end_warmup_time = time.time()
-  print('time warmup = {}'.format(end_warmup_time - start_time))
-  # now want to clean any tensorflow graphs that may exist still
-  keras.backend.clear_session()
-  # now want to create a boomerang kernel
-  boomerang_target = boomerang_bnn_neg_joint_log_prob_fn(
-      model, likelihood_fn, X_train, y_train, var_preconditioner, init_state)
-  boomerang_kernel = BoomerangKernel(boomerang_target,
-                                     var_preconditioner,
-                                     init_state,
-                                     store_parameters_in_results=True,
-                                     ipp_sampler=ipp_sampler,
-                                     batch_size=batch_size,
-                                     data_size=data_size,
-                                     lambda_ref=lambda_ref)
-  # SAMPLING PHASE
-  # now loop over the actual samples from (hopefully) the posterior
-  bps_results, acceptance_ratio = graph_hmc(
-      num_results=num_results,
-      current_state=init_state,
-      num_steps_between_results=num_steps_between_results,
-      kernel=boomerang_kernel,
-      trace_fn=trace_fn)
-  #    return_final_kernel_results=True,
-  print('acceptance_ratio = {}'.format(acceptance_ratio))
-  print(type(acceptance_ratio))
-  print('num acceptance_ratio > 1 = {}'.format(np.sum(
-      (acceptance_ratio > 1.0))))
-  bps_chain = bps_results
-  # save these samples to file
-  save_chain(bps_chain, out_dir)
-  print('finished sampling')
-  end_sampling_time = time.time()
-  print('total sampling time = {}'.format(end_sampling_time - start_time))
-  # plot the results if specified to
-  if (plot_results):
-    # if the output is one dimensional, will be regression task so plot using
-    # regression methods
-    if (y_test.shape[-1] == 1):
-      plot_pred_posterior(model, bps_chain, likelihood_str, num_results,
-                          X_train, y_train, X_test, y_test, out_dir, 'bps')
-    # otherwise will be classification task, so plot using those methods
-    else:
-      plot_image_pred_posterior(model, bps_chain, num_results, X_train, y_train,
-                                X_test, y_test, 'bps')
-
-
-def cov_pbps_main(model,
-                  ipp_sampler_str,
-                  lambda_ref,
-                  num_results,
-                  num_burnin_steps,
-                  out_dir,
-                  bnn_neg_joint_log_prob,
-                  map_initial_state,
-                  X_train,
-                  y_train,
-                  X_test,
-                  y_test,
-                  batch_size,
-                  data_size,
-                  data_dimension_dict,
-                  plot_results=True,
-                  num_steps_between_results=0):
-  """main method for running BPS on model with diagonal covariance
-  preconditioned gradients.
-  """
-  print('running covariance preconditioned bps')
-  start_time = time.time()
-  #print(('WARNING: Current BPS kernel is set up '))
-  # finding the number of samples to perform for each iteration
-  print('map_initial_state bps = {}'.format(map_initial_state))
-  num_params = np.sum([x.numpy().size for x in map_initial_state])
-  print('num_params = {}'.format(num_params))
-  num_samples_per_loop, num_loops = find_num_iters_and_loops(
-      num_params, num_results)
-  if ipp_sampler_str == 'adaptive':
-    ipp_sampler = AdaptivePSBPSampler
-  else:
-    ipp_sampler = PSBPSampler
-  # create the kernel
-  kernel = CovPBPSKernel(target_log_prob_fn=bnn_neg_joint_log_prob,
-                         store_parameters_in_results=True,
-                         ipp_sampler=ipp_sampler,
-                         batch_size=batch_size,
-                         data_size=data_size,
-                         lambda_ref=lambda_ref)
-  # convert the init state into a tensor first
-  init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # BURNIN PHASE
-  # start sampling for burnin, and then discard these samples
-  # we may not be able to fit all the burnin samples in a single loop,
-  # so we will loop over a few times if we need to
-  num_samples_per_loop, num_loops = find_num_iters_and_loops(
-      num_params, num_results)
-  # create the kernel
-  # BURNIN PHASE
-  # start sampling for burnin, and then discard these samples
-  bps_results = graph_hmc(num_results=num_results,
-                          current_state=init_state,
-                          num_steps_between_results=num_steps_between_results,
-                          return_final_kernel_results=True,
-                          kernel=kernel)
-  samples = bps_results.all_states
-  # final kernel results used to initialise next call of loop
-  kernel_results = bps_results.final_kernel_results
-  diag_prec = [1.0 / np.var(x, axis=0) for x in samples]
-  kernel_results = kernel_results._replace(preconditioner=diag_prec)
-  end_warmup_time = time.time()
-  print('time warmup = {}'.format(end_warmup_time - start_time))
-  # SAMPLING PHASE
-  # now loop over the actual samples from (hopefully) the posterior
-  bps_results = graph_hmc(num_results=num_samples_per_loop,
-                          current_state=init_state,
-                          previous_kernel_results=kernel_results,
-                          num_steps_between_results=num_steps_between_results,
-                          return_final_kernel_results=True,
-                          kernel=kernel,
-                          trace_fn=None)
-  # extract the chain and the final kernel results
-  bps_chain = bps_results.all_states
-  save_chain(bps_chain, out_dir, 0)
-  # final kernel results used to initialise next call of loop
-  kernel_previous_results = bps_results.final_kernel_results
-  print('finished sampling')
-  end_sampling_time = time.time()
-  print('total sampling time = {}'.format(end_sampling_time - start_time))
-  # plot the results if specified to
-  if (plot_results):
-    print('plotting pred posterior and test accuracy')
-    # if the output is one dimensional, will be regression task so plot using
-    # regression methods
-    if (y_test.shape[-1] == 1):
-      plot_pred_posterior(model, bps_chain, num_results, X_train, y_train,
-                          X_test, y_test, out_dir, 'bps')
-    # otherwise will be classification task, so plot using those methods
-    else:
-      plt_dims = [
-          data_dimension_dict['in_height'], data_dimension_dict['in_width']
-      ]
-      plot_image_iter_pred_posterior(model, out_dir, X_train, y_train, X_test,
-                                     y_test, plt_dims)
-
-
-def pbps_main(model,
-              ipp_sampler_str,
-              likelihood_str,
-              lambda_ref,
-              num_results,
-              num_burnin_steps,
-              out_dir,
-              bnn_neg_joint_log_prob,
-              map_initial_state,
-              X_train,
-              y_train,
-              X_test,
-              y_test,
-              batch_size,
-              data_size,
-              data_dimension_dict,
-              plot_results=True,
-              num_steps_between_results=0):
-  """main method for running BPS on model with diagonal covariance
-  preconditioned gradients.
-  """
-  print('running covariance preconditioned bps')
-  start_time = time.time()
-  #print(('WARNING: Current BPS kernel is set up '))
-  # finding the number of samples to perform for each iteration
-  print('map_initial_state bps = {}'.format(map_initial_state))
-  num_params = np.sum([x.numpy().size for x in map_initial_state])
-  print('num_params = {}'.format(num_params))
-  num_samples_per_loop, num_loops = find_num_iters_and_loops(
-      num_params, num_results)
-  if ipp_sampler_str == 'adaptive':
-    ipp_sampler = AdaptivePSBPSampler
-  else:
-    ipp_sampler = PSBPSampler
-  # create the kernel
-  kernel = PBPSKernel(target_log_prob_fn=bnn_neg_joint_log_prob,
-                      store_parameters_in_results=True,
-                      ipp_sampler=ipp_sampler,
-                      batch_size=batch_size,
-                      data_size=data_size,
-                      lambda_ref=lambda_ref)
-  # convert the init state into a tensor first
-  init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # BURNIN PHASE
-  # start sampling for burnin, and then discard these samples
-  # we may not be able to fit all the burnin samples in a single loop,
-  # so we will loop over a few times if we need to
-  num_samples_per_loop, num_loops = find_num_iters_and_loops(
-      num_params, num_results)
-  # create the kernel
-  # BURNIN PHASE
-  # start sampling for burnin, and then discard these samples
-  bps_results = graph_hmc(num_results=num_burnin_steps,
-                          current_state=init_state,
-                          num_steps_between_results=num_steps_between_results,
-                          return_final_kernel_results=True,
-                          kernel=kernel)
-  samples = bps_results.all_states
-  # final kernel results used to initialise next call of loop
-  kernel_results = bps_results.final_kernel_results
-  end_warmup_time = time.time()
-  print('time warmup = {}'.format(end_warmup_time - start_time))
-  # SAMPLING PHASE
-  # now loop over the actual samples from (hopefully) the posterior
-  bps_results = graph_hmc(num_results=num_results,
-                          current_state=init_state,
-                          previous_kernel_results=kernel_results,
-                          num_steps_between_results=num_steps_between_results,
-                          return_final_kernel_results=True,
-                          kernel=kernel,
-                          trace_fn=None)
-  # extract the chain and the final kernel results
-  bps_chain = bps_results.all_states
-  save_chain(bps_chain, out_dir, 0)
-  # final kernel results used to initialise next call of loop
-  kernel_previous_results = bps_results.final_kernel_results
-  print('finished sampling')
-  end_sampling_time = time.time()
-  print('total sampling time = {}'.format(end_sampling_time - start_time))
-  # plot the results if specified to
-  if (plot_results):
-    print('plotting pred posterior and test accuracy')
-    # if the output is one dimensional, will be regression task so plot using
-    # regression methods
-    if (y_test.shape[-1] == 1) or (len(y_test.shape) == 1):
-      plot_pred_posterior(model, bps_chain, likelihood_str, num_results,
-                          X_train, y_train, X_test, y_test, out_dir, 'bps')
-    # otherwise will be classification task, so plot using those methods
-    else:
-      plt_dims = [
-          data_dimension_dict['in_height'], data_dimension_dict['in_width']
-      ]
-      plot_image_iter_pred_posterior(model, out_dir, X_train, y_train, X_test,
-                                     y_test, plt_dims)
 
 
 def bps_iter_main(model,
@@ -1902,18 +1467,10 @@ def bps_iter_main(model,
   print('running bps')
   start_time = time.time()
   # finding the number of samples to perform for each iteration
-  if ipp_sampler_str == 'adaptive':
-    ipp_sampler = AdaptiveSBPSampler
-  elif ipp_sampler_str == 'interpolation':
-    ipp_sampler = InterpolationSampler
-
-  else:
-    ipp_sampler = SBPSampler
+  ipp_sampler = InterpolationSampler
   # print('map_initial_state bps = {}'.format(map_initial_state))
   num_params = np.sum([x.numpy().size for x in map_initial_state])
   print('num_params = {}'.format(num_params))
-  # num_samples_per_loop, num_loops = find_num_iters_and_loops(
-  #     num_params, num_results)
   num_samples_per_loop = np.int32(num_results / num_loops)
   # create the kernel
   kernel = IterBPSKernel(parent_target_log_prob_fn=bnn_neg_joint_log_prob,
@@ -1925,9 +1482,6 @@ def bps_iter_main(model,
                          std_ref=std_ref)
   # convert the init state into a tensor first
   init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # print(len(map_initial_state))
-  # print(len(init_state))
-  # print([x.shape for x in init_state])
   # BURNIN PHASE
   # start sampling for burnin, and then discard these samples
   # we may not be able to fit all the burnin samples in a single loop,
@@ -2061,12 +1615,6 @@ def hmc_iter_main(model,
   start_time = time.time()
   num_params = np.sum([x.numpy().size for x in map_initial_state])
   print('num_params = {}'.format(num_params))
-  # num_samples_per_loop = np.int32(num_results / num_loops)
-  # get the log prob from the parent log prob fn
-  # kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=bnn_joint_log_prob,
-  #                                         step_size=0.001,
-  #                                         num_leapfrog_steps=10,
-  #                                         store_parameters_in_results=True)
   kernel = IterHMCKernel(parent_target_log_prob_fn=bnn_joint_log_prob,
                          step_size=step_size,
                          num_leapfrog_steps=leapfrog_steps,
@@ -2078,7 +1626,6 @@ def hmc_iter_main(model,
   hmc_chain = [[] for i in range(0, len(next_state))]
   print(hmc_chain)
   trace_fn = lambda _, pkr: pkr.log_acceptance_correction
-  # trace_fn = lambda _, pkr:  pkr.log_acceptance_correction
   # run bootstrap here to get the initial state for burnin
   # this allows us to start sampling at each loop exactly where we left off
   kernel_results = kernel.bootstrap_results(next_state)
@@ -2155,7 +1702,7 @@ def sgld_iter_main(model,
                    run_eval=True,
                    num_steps_between_results=0):
   """main method for running sgld on model"""
-  print('running hmc')
+  print('running sgld')
   start_time = time.time()
   num_params = np.sum([x.numpy().size for x in map_initial_state])
   print('num_params = {}'.format(num_params))
@@ -2172,13 +1719,9 @@ def sgld_iter_main(model,
       sgld_opt_step()
       if i % (num_steps_between_results + 1) == 0:
         # add the updated model params to the list
-        # print([type(x) for x in sgld_chain])
         for param_idx in range(0, len(sgld_chain)):
           sgld_chain[param_idx].append(model.trainable_variables[param_idx].read_value())
-        # print(model.trainable_variables[-1].numpy())
 
-
-      # sgld_chain = [x.append(y) for x, y in zip(sgld_chain, model.trainable_variables)]
     # stack the list of variables so params have dimensions of [n_samples, *param_dims]
     print(sgld_chain[-1])
     sgld_chain = [tf.stack(x, axis=0) for x in sgld_chain]
@@ -2195,9 +1738,6 @@ def sgld_iter_main(model,
     if (data_dimension_dict['out_dim'] == 1):
       plot_pred_posterior(model, sgld_chain, likelihood_str, num_results,
                           training_iter, test_ds, out_dir, 'sgld')
-      # plot_pred_posterior(model, chain, likelihood_str, num_results, training_iter,
-      # test_ds, out_dir, name):
-
     # otherwise will be classification task, so plot using those methods
     else:
       if data_dimension_dict['in_channels'] == 1:
@@ -2255,8 +1795,6 @@ def variational_iter_main(model,
     print('plotting pred posterior and test accuracy')
     # if the output is one dimensional, will be regression task so plot using
     # regression methods
-    # plot_pred_posterior(model, chain, likelihood_str, num_results, training_iter,
-    # test_ds, out_dir, name):
     # get the raw data from the tf.Dataframes
     X_train, y_train = next(iter(training_ds))
     X_test, y_test = next(iter(test_ds))
@@ -2293,6 +1831,7 @@ def cov_pbps_one_step(state, kernel, prev_kernel_results):
 def cov_pbps_test_iter_main(model,
                             ipp_sampler_str,
                             lambda_ref,
+                            cov_ref,
                             std_ref,
                             num_results,
                             num_burnin_steps,
@@ -2323,21 +1862,17 @@ def cov_pbps_test_iter_main(model,
   num_samples_per_loop = np.int32(num_results / num_loops)
   # num_samples_per_loop, num_loops = find_num_iters_and_loops(
   # num_params, num_results)
-  if ipp_sampler_str == 'adaptive':
-    ipp_sampler = AdaptivePSBPSampler
-  elif ipp_sampler_str == 'interpolation':
-    ipp_sampler = InterpolationPSampler
-  else:
-    ipp_sampler = PSBPSampler
+  ipp_sampler = InterpolationPSampler
+  bps_ipp_sampler = InterpolationSampler
   print('ipp_sampler = {}'.format(ipp_sampler))
   # create the kernel
-  kernel = IterCovPBPSKernel(parent_target_log_prob_fn=bnn_neg_joint_log_prob,
-                             store_parameters_in_results=True,
-                             ipp_sampler=ipp_sampler,
-                             batch_size=batch_size,
-                             data_size=data_size,
-                             lambda_ref=lambda_ref,
-                             std_ref=std_ref)
+  kernel = IterBPSKernel(parent_target_log_prob_fn=bnn_neg_joint_log_prob,
+                         store_parameters_in_results=True,
+                         ipp_sampler=bps_ipp_sampler,
+                         batch_size=batch_size,
+                         data_size=data_size,
+                         lambda_ref=lambda_ref,
+                         std_ref=std_ref)
   # convert the init state into a tensor first
   init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
   # BURNIN PHASE
@@ -2354,7 +1889,7 @@ def cov_pbps_test_iter_main(model,
   running_mean = [tf.zeros_like(x) for x in init_state]
   delta1 = [tf.zeros_like(x) for x in init_state]
   delta2 = [tf.zeros_like(x) for x in init_state]
-  M2 = [tf.zeros_like(x) for x in init_state]
+  M2 = [tf.ones_like(x) for x in init_state]
   print('num_burnin = {}'.format(num_burnin_steps))
   for i in range(0, num_burnin_steps):
     next_state, kernel_results = cov_pbps_one_step(next_state, kernel,
@@ -2362,7 +1897,6 @@ def cov_pbps_test_iter_main(model,
     # now get running variance appro  x
     delta1 = [x - m for x, m in zip(next_state, running_mean)]
     # first need running mean approx
-    # running_mean = [(x + d) / (i + 1) for x, d in zip(next_state, delta1)]
     # the + 1 in the denominator is because the loop starts at zero
     running_mean = [m + d / (i + 1) for m, d in zip(running_mean, delta1)]
     # recompute second delta with updated mean, needed for M2 for variance later on
@@ -2371,19 +1905,28 @@ def cov_pbps_test_iter_main(model,
   # can now get the variance calc
   std_preconditioner = [tf.math.sqrt(M / num_burnin_steps) for M in M2]
   # std_preconditioner = [tf.math.sqrt(M / num_burnin_steps) for M in M2]
-  kernel_previous_results = kernel_results._replace(
-      preconditioner=std_preconditioner)
   end_warmup_time = time.time()
   print('time warmup = {}'.format(end_warmup_time - start_time))
-  kernel.ref_dist = tfd.Exponential(0.01)
   # for i in range(0, len(online_var)):
   #   print('{} var shape = {}, param shape = {}'.format(i, online_var[i].shape,
   #                                                      init_state[i].shape))
+  kernel = IterCovPBPSKernel(parent_target_log_prob_fn=bnn_neg_joint_log_prob,
+                             store_parameters_in_results=True,
+                             ipp_sampler=ipp_sampler,
+                             batch_size=batch_size,
+                             data_size=data_size,
+                             lambda_ref=cov_ref,
+                             std_ref=std_ref)
+  kernel_results = kernel.bootstrap_results(init_state)
+  kernel_previous_results = kernel_results._replace(
+    preconditioner=std_preconditioner)
   # SAMPLING PHASE
   # now loop over the actual samples from (hopefully) the posterior
   acceptance_list = []
+  time_list = []
+  proposed_time_list = []
+  trace_fn = lambda _, pkr: (pkr.acceptance_ratio, pkr.time, pkr.proposed_time, pkr.velocity)
   # create the trace function
-  trace_fn = lambda _, pkr: pkr.acceptance_ratio
   for loop_iter in range(0, num_loops):
     print('loop iter = {}'.format(loop_iter))
     bps_results = graph_hmc(num_results=num_samples_per_loop,
@@ -2396,9 +1939,12 @@ def cov_pbps_test_iter_main(model,
     # extract the chain and the final kernel results
     bps_chain = bps_results.all_states
     # add the acceptance ratios to the list
-    acceptance_list.append(bps_results.trace.numpy())
+    acceptance_list.append(bps_results.trace[0].numpy())
     # final kernel results used to initialise next call of loop
     kernel_previous_results = bps_results.final_kernel_results
+    # time lists
+    time_list.append(bps_results.trace[1].numpy())
+    proposed_time_list.append(bps_results.trace[2].numpy())
     # save these samples to file
     save_chain(bps_chain, out_dir, loop_iter)
     # get the final state of the chain from the previous loop iter
@@ -2408,14 +1954,21 @@ def cov_pbps_test_iter_main(model,
   print('total sampling time = {}'.format(end_sampling_time - start_time))
   if len(acceptance_list) > 1:
     acceptance_ratio = np.concatenate(acceptance_list)
+    result_time = np.concatenate(time_list)
+    proposed_time = np.concatenate(proposed_time_list)
   else:
     acceptance_ratio = acceptance_list[0]
+    result_time = time_list[0]
+    proposed_time = proposed_time_list[0]
   np.save(os.path.join(out_dir, 'acceptance_ratio.npy'), acceptance_ratio)
   print('acceptance_ratio = {}'.format(acceptance_ratio))
   print(type(acceptance_ratio))
   print('num acceptance_ratio > 1 = {}'.format(np.sum(
       (acceptance_ratio > 1.0))))
-  # plot the results if specified to
+  print(f'result time = {result_time}')
+  print(f'proposed time = {proposed_time}')
+  np.save(os.path.join(out_dir, 'proposed_times.npy'), proposed_time)
+  np.save(os.path.join(out_dir, 'result_times.npy'), result_time)
   # plot the results if specified to
   if (plot_results or run_eval):
     print('plotting pred posterior and test accuracy')
@@ -2561,8 +2114,6 @@ def pbps_iter_main(model,
     if (data_dimension_dict['out_dim'] == 1):
       plot_pred_posterior(model, bps_chain, likelihood_str, num_results,
                           training_iter, test_ds, out_dir, 'bps')
-      # plot_pred_posterior(model, bps_chain, num_results, training_iter, test_ds,
-      # out_dir, 'bps')
     # otherwise will be classification task, so plot using those methods
     else:
       if data_dimension_dict['in_channels'] == 1:
@@ -2583,7 +2134,6 @@ def pbps_iter_main(model,
 
 def iter_boomerang_neg_joint_log_prob(model, likelihood_fn, dataset_iter,
                                       preconditioner, mean):
-
   def _fn():
     print('calling iter')
     X, y = dataset_iter.next()
@@ -2593,12 +2143,21 @@ def iter_boomerang_neg_joint_log_prob(model, likelihood_fn, dataset_iter,
   return _fn
 
 
+@tf.function
+def boomerang_warmup_one_step(state, kernel, prev_kernel_results):
+  next_state, next_kernel_results = kernel.one_step(state, prev_kernel_results)
+  return next_state, next_kernel_results
+
+
 def boomerang_iter_main(model,
                         ipp_sampler_str,
                         lambda_ref,
+                        std_ref,
                         num_results,
                         num_burnin_steps,
                         out_dir,
+                        num_loops,
+                        hessian_fn,
                         bnn_neg_joint_log_prob,
                         strategy,
                         likelihood_fn,
@@ -2606,195 +2165,18 @@ def boomerang_iter_main(model,
                         training_iter,
                         test_ds,
                         test_orig_ds,
+                        likelihood_str,
                         batch_size,
                         data_size,
                         data_dimension_dict,
                         plot_results=True,
                         run_eval=True,
                         num_steps_between_results=0):
-  """main method for running BPS on model"""
+  """main method for running boomerang on model"""
   print('running boomerang')
   start_time = time.time()
   # finding the number of samples to perform for each iteration
-  if ipp_sampler_str == 'adaptive':
-    ipp_sampler = AdaptiveSBPSampler
-  else:
-    ipp_sampler = SBPSampler
-  print('map_initial_state bps = {}'.format(map_initial_state))
-  num_params = np.sum([x.numpy().size for x in map_initial_state])
-  print('num_params = {}'.format(num_params))
-  num_samples_per_loop, num_loops = find_num_iters_and_loops(
-      num_params, num_results)
-  # create the kernel
-  kernel = IterBPSKernel(parent_target_log_prob_fn=bnn_neg_joint_log_prob,
-                         store_parameters_in_results=True,
-                         ipp_sampler=ipp_sampler,
-                         batch_size=batch_size,
-                         data_size=data_size,
-                         lambda_ref=0.0001)  #lambda_ref)
-  # convert the init state into a tensor first
-  init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # BURNIN PHASE
-  # start sampling for burnin, and then discard these samples
-  # we may not be able to fit all the burnin samples in a single loop,
-  # so we will loop over a few times if we need to
-  print('num_samples_per_loop = {}'.format(num_samples_per_loop))
-  print('num_loops = {}'.format(num_loops))
-  num_burnin_iters = np.ceil(num_burnin_steps / num_samples_per_loop).astype(
-      np.int)
-  # create the trace function
-  trace_fn = lambda _, pkr: pkr.acceptance_ratio
-  # run bootstrap here to get the initial state for burnin
-  # this allows us to start sampling at each loop exactly where we left off
-  kernel_previous_results = kernel.bootstrap_results(init_state)
-  # now run the burnin phase
-  init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # saving another copy that will be updated periodically during adaptive
-  # warmup stage
-  next_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # similar thing to get initial kernel results stage
-  kernel_results = kernel.bootstrap_results(init_state)
-  # creating the trace function
-  trace_fn = lambda _, pkr: pkr.acceptance_ratio
-  # BURNIN PHASE
-  # start sampling for burnin, and then discard these samples
-  # to hold the current and the previous values needed for only variance
-  # estimation
-  # similar for running mean
-  running_mean = [tf.zeros_like(x) for x in init_state]
-  delta1 = [tf.zeros_like(x) for x in init_state]
-  delta2 = [tf.zeros_like(x) for x in init_state]
-  M2 = [tf.zeros_like(x) for x in init_state]
-  print('num_burnin = {}'.format(num_burnin_steps))
-  for i in range(0, num_burnin_steps):
-    next_state, kernel_results = boomerang_one_step(next_state, kernel,
-                                                    kernel_results)
-    # now get running variance appro  x
-    delta1 = [x - m for x, m in zip(next_state, running_mean)]
-    # first need running mean approx
-    # running_mean = [(x + d) / (i + 1) for x, d in zip(next_state, delta1)]
-    # the + 1 in the denominator is because the loop starts at zero
-    running_mean = [m + d / (i + 1) for m, d in zip(running_mean, delta1)]
-    # recompute second delta with updated mean, needed for M2 for variance later on
-    delta2 = [x - m for x, m in zip(next_state, running_mean)]
-    M2 = [M + d1 * d2 for M, d1, d2 in zip(M2, delta1, delta2)]
-  # can now get the variance calc
-  var_preconditioner = [M / num_burnin_steps for M in M2]
-  end_warmup_time = time.time()
-  print('time warmup = {}'.format(end_warmup_time - start_time))
-  print(var_preconditioner)
-  # time.sleep(10000)
-  # now want to clean any tensorflow graphs that may exist still
-  #keras.backend.clear_session()
-  # now want to create a boomerang kernel
-  boomerang_target = iter_grad_boomerang_fn(model, likelihood_fn, training_iter,
-                                            var_preconditioner, init_state,
-                                            strategy)
-  boomerang_kernel = BoomerangIterKernel(boomerang_target,
-                                         var_preconditioner,
-                                         init_state,
-                                         store_parameters_in_results=True,
-                                         ipp_sampler=ipp_sampler,
-                                         batch_size=batch_size,
-                                         data_size=data_size,
-                                         lambda_ref=lambda_ref)
-  # SAMPLING PHASE
-  # now loop over the actual samples from (hopefully) the posterior
-  acceptance_list = []
-  for loop_iter in range(0, num_loops):
-    print('loop iter = {}'.format(loop_iter))
-    boomerang_results = graph_hmc(
-        num_results=num_samples_per_loop,
-        current_state=init_state,
-        kernel=boomerang_kernel,
-        previous_kernel_results=kernel_previous_results,
-        return_final_kernel_results=True,
-        trace_fn=trace_fn)
-    # extract the chain and the final kernel results
-    boomerang_chain = boomerang_results.all_states
-    # add the acceptance ratios to the list
-    acceptance_list.append(boomerang_results.trace.numpy())
-    # final kernel results used to initialise next call of loop
-    kernel_previous_results = boomerang_results.final_kernel_results
-    # save these samples to file
-    save_chain(boomerang_chain, out_dir, loop_iter)
-    # get the final state of the chain from the previous loop iter
-    init_state = [x[-1] for x in boomerang_chain]
-  print('finished sampling')
-  end_sampling_time = time.time()
-  print('total sampling time = {}'.format(end_sampling_time - start_time))
-  if len(acceptance_list) > 1:
-    acceptance_ratio = np.concatenate(acceptance_list)
-  else:
-    acceptance_ratio = acceptance_list[0]
-  print('acceptance_ratio = {}'.format(acceptance_ratio))
-  print(type(acceptance_ratio))
-  print('num acceptance_ratio > 1 = {}'.format(np.sum(
-      (acceptance_ratio > 1.0))))
-  if (plot_results or run_eval):
-    print('plotting pred posterior and test accuracy')
-    # if the output is one dimensional, will be regression task so plot using
-    # regression methods
-    if (data_dimension_dict['out_dim'] == 1):
-      plot_pred_posterior(model, bps_chain, num_results, training_iter, test_ds,
-                          out_dir, 'bps')
-    # otherwise will be classification task, so plot using those methods
-    else:
-      if data_dimension_dict['in_channels'] == 1:
-        plt_dims = [
-            data_dimension_dict['in_height'], data_dimension_dict['in_width']
-        ]
-      else:
-        plt_dims = [
-            data_dimension_dict['in_height'], data_dimension_dict['in_width'],
-            data_dimension_dict['in_channels']
-        ]
-      eval_plot_image_iter_pred_posterior(model, out_dir, training_iter,
-                                          test_ds, test_orig_ds,
-                                          data_dimension_dict['out_dim'],
-                                          data_dimension_dict['out_dim'],
-                                          plot_results, plt_dims)
-
-
-@tf.function
-def boomerang_warmup_one_step(state, kernel, prev_kernel_results):
-  next_state, next_kernel_results = kernel.one_step(state, prev_kernel_results)
-  return next_state, next_kernel_results
-
-
-def boomerang_test_iter_main(model,
-                             ipp_sampler_str,
-                             lambda_ref,
-                             std_ref,
-                             num_results,
-                             num_burnin_steps,
-                             out_dir,
-                             num_loops,
-                             hessian_fn,
-                             bnn_neg_joint_log_prob,
-                             strategy,
-                             likelihood_fn,
-                             map_initial_state,
-                             training_iter,
-                             test_ds,
-                             test_orig_ds,
-                             likelihood_str,
-                             batch_size,
-                             data_size,
-                             data_dimension_dict,
-                             plot_results=True,
-                             run_eval=True,
-                             num_steps_between_results=0):
-  """main method for running BPS on model"""
-  print('running boomerang')
-  start_time = time.time()
-  # finding the number of samples to perform for each iteration
-  if ipp_sampler_str == 'adaptive':
-    ipp_sampler = AdaptiveSBPSampler
-  elif ipp_sampler_str == 'interpolation':
-    ipp_sampler = InterpolationSampler
-  else:
-    ipp_sampler = SBPSampler
+  ipp_sampler = InterpolationBoomSampler
   print('map_initial_state bps = {}'.format(map_initial_state))
   num_params = np.sum([x.numpy().size for x in map_initial_state])
   print('num_params = {}'.format(num_params))
@@ -2804,7 +2186,6 @@ def boomerang_test_iter_main(model,
   # convert the init state into a tensor first
   init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
   hessian_diag = [tf.zeros_like(x) for x in map_initial_state]
-
 
   # hessian phase
   # find number of iterations needed to go over entire dataset
@@ -2816,65 +2197,33 @@ def boomerang_test_iter_main(model,
     # add this batch hessian to the sum over all data points next
     hessian_diag = [h + b for h, b in zip(hessian_diag, hessian_diag_batch)]
   var_preconditioner = [std_ref / tf.math.abs(h) for h in hessian_diag]
-  # var_preconditioner = [tf.math.abs(h) for h in hessian_diag]
-
-  # scale it by the layer level mean
-  # var_preconditioner = [p / tf.reduce_max(p)  for p in var_preconditioner]
-  # var_preconditioner = [p / 1000.0  for p in var_preconditioner]
+  # make sure no nans or infs were introduced due to a divide by zero
+  # if they were, then replace them with the maximum value seen in that layer
+  for i in range(0, len(var_preconditioner)):
+    # find the maximum non inf number
+    v = var_preconditioner[i]
+    finite_idx = tf.math.is_finite(v)
+    inf_idx = tf.math.is_inf(v)
+    print(type(inf_idx))
+    max_non_inf = tf.reduce_max(v[finite_idx])
+    print(f'max non inf = {max_non_inf}')
+    # print(f'num_infs to replace = {tf.reduce_sum(inf_idx)}')
+    print(f'num_infs to replace = {tf.size(inf_idx)}')
+    print(f'max value before = {tf.reduce_max(var_preconditioner[i])}')
+    print(f'min value before = {tf.reduce_min(var_preconditioner[i])}')
+    # now replace any infs with this max
+    var_preconditioner[i] = tf.where(
+      inf_idx,
+      tf.ones_like(var_preconditioner[i]) * max_non_inf,
+      var_preconditioner[i])
+    print(f'max value after = {tf.reduce_max(var_preconditioner[i])}')
+    print(f'min value after = {tf.reduce_min(var_preconditioner[i])}')
   print(var_preconditioner)
   print('var condintioner')
-  # time.sleep(10)
-  # var_preconditioner = [0.00001 * tf.ones_like(x) for x in init_state]
-  # kernel = IterBPSKernel(parent_target_log_prob_fn=bnn_neg_joint_log_prob,
-  #                        store_parameters_in_results=True,
-  #                        ipp_sampler=ipp_sampler,
-  #                        batch_size=batch_size,
-  #                        data_size=data_size,
-  #                        lambda_ref=lambda_ref)
-  # # convert the init state into a tensor first
-  # init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # # BURNIN PHASE
-  # # start sampling for burnin, and then discard these samples
-  # # we may not be able to fit all the burnin samples in a single loop,
-  # # so we will loop over a few times if we need to
-  # print('num_samples_per_loop = {}'.format(num_samples_per_loop))
-  # print('num_loops = {}'.format(num_loops))
-  # # run bootstrap here to get the initial state for burnin
-  # # this allows us to start sampling at each loop exactly where we left off
-  # next_state = init_state
-  # kernel_results = kernel.bootstrap_results(init_state)
-  # # create a current estimate for the running mean and variance
-  # running_mean = [tf.zeros_like(x) for x in init_state]
-  # delta1 = [tf.zeros_like(x) for x in init_state]
-  # delta2 = [tf.zeros_like(x) for x in init_state]
-  # M2 = [tf.zeros_like(x) for x in init_state]
-  # print('num_burnin = {}'.format(num_burnin_steps))
-  # num_burnin_steps = 10000
-  # for i in range(0, num_burnin_steps):
-  #   next_state, kernel_results = boomerang_warmup_one_step(next_state, kernel,
-  #                                                          kernel_results)
-  #   # now get running variance appro  x
-  #   delta1 = [x - m for x, m in zip(next_state, running_mean)]
-  #   # first need running mean approx
-  #   # running_mean = [(x + d) / (i + 1) for x, d in zip(next_state, delta1)]
-  #   # the + 1 in the denominator is because the loop starts at zero
-  #   running_mean = [m + d / (i + 1) for m, d in zip(running_mean, delta1)]
-  #   # recompute second delta with updated mean, needed for M2 for variance later on
-  #   delta2 = [x - m for x, m in zip(next_state, running_mean)]
-  #   M2 = [M + d1 * d2 for M, d1, d2 in zip(M2, delta1, delta2)]
-  # # can now get the variance calc
-  # var_preconditioner = [M / num_burnin_steps for M in M2]
-  # var_preconditioner = [1 / v for v in var_preconditioner]
-
-  # # mean = [tf.zeros_like(x) for x in init_state]
   mean = init_state
-  # end_warmup_time = time.time()
-  # print('time warmup = {}'.format(end_warmup_time - start_time))
-  # print(var_preconditioner)
-  # now want to clean any tensorflow graphs that may exist still
-  #keras.backend.clear_session()
   # now want to create a boomerang kernel
   boomerang_target = iter_grad_boomerang_fn(model, likelihood_fn, training_iter,
+                                            data_size, batch_size,
                                             var_preconditioner, mean, strategy)
   acceptance_list = []
   time_list = []
@@ -3008,86 +2357,6 @@ def graph_bps(num_results,
 
   return bps_chain
 
-  # model, args.num_results, args.num_burnin, out_dir,
-  # bnn_joint_log_prob, map_initial_state,
-  # X_train, y_train, X_test, y_test, data_dimension_dict
-
-
-def nuts_main(model,
-              num_results,
-              num_burnin_steps,
-              out_dir,
-              bnn_joint_log_prob,
-              map_initial_state,
-              X_train,
-              y_train,
-              X_test,
-              y_test,
-              data_dimension_dict,
-              target_accept_prob=0.95):
-  """main method for running HMC on model"""
-  print('running NUTS')
-  # hmc_chain = run_hmc_and_plot(map_initial_state,
-  #                              bnn_joint_log_prob, num_results=num_results,
-  #                              plot_name='keras_test')
-  if (num_burnin_steps is None):
-    num_burnin_steps = num_results // 2
-  kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=bnn_joint_log_prob,
-                                   step_size=0.02)
-  init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # set up kernel to adjust step size
-  # kernel = tfp.mcmc.SimpleStepSizeAdaptation(
-  #   inner_kernel=kernel,
-  #   target_accept_prob=target_accept_prob,
-  #   num_adaptation_steps=np.int(num_burnin_steps * 0.8))
-  kernel = tfp.mcmc.DualAveragingStepSizeAdaptation(
-      inner_kernel=kernel,
-      target_accept_prob=target_accept_prob,
-      num_adaptation_steps=np.int(num_burnin_steps * 0.8),
-      step_size_getter_fn=lambda pkr: pkr.step_size,
-      log_accept_prob_getter_fn=lambda pkr: pkr.log_accept_ratio,
-      step_size_setter_fn=lambda pkr, new_step_size: pkr._replace(
-          step_size=new_step_size))
-  #for i in range(0, 10):
-  nuts_chain, divergence = graph_hmc(
-      num_results=num_results,
-      current_state=init_state,
-      kernel=kernel,
-      trace_fn=lambda _, pkr: pkr.inner_results.has_divergence)
-  print('Number divergences = {}'.format(np.sum(divergence)))
-  plot_pred_posterior(model, nuts_chain, num_results, X_train, y_train, X_test,
-                      y_test, out_dir, 'nuts')
-  save_chain(nuts_chain, out_dir, 0)
-
-
-def hmc_main(model, num_results, num_burnin_steps, bnn_joint_log_prob,
-             map_initial_state, X_train, y_train, X_test, y_test):
-  """main method for running NUTS on model"""
-  print('running HMC')
-  if (num_burnin_steps is None):
-    num_burnin_steps = num_results // 2
-  kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=bnn_joint_log_prob,
-                                          num_leapfrog_steps=1,
-                                          step_size=0.02)
-  kernel = tfp.mcmc.DualAveragingStepSizeAdaptation(inner_kernel=kernel,
-                                                    num_adaptation_steps=int(
-                                                        num_burnin_steps * 0.8))
-  # start sampling
-  for i in range(0, 10):
-    hmc_chain = graph_hmc(num_results=num_results,
-                          current_state=map_initial_state,
-                          kernel=kernel,
-                          num_steps_between_results=10,
-                          trace_fn=None)
-
-    plot_pred_posterior(model, hmc_chain, num_results, X_train, y_train, X_test,
-                        y_test, 'hmc_{}'.format(i))
-    # save this current iter
-    print('saving iter {} of total chain'.format(i))
-    filehandler = open('hmc_chain_{}'.format(i), 'wb')
-    pickle.dump(hmc_chain, filehandler)
-    map_initial_state = [t[-1] for t in hmc_chain]
-
 
 def plot_pred_posterior(model, chain, likelihood_str, num_results,
                         training_iter, test_ds, out_dir, name):
@@ -3195,39 +2464,10 @@ def plot_regression_pred_posterior(model, chain, num_results, X_train, y_train,
                          color="#cbd9f0")
   plt.scatter(X_train, y_train, marker='o', alpha=0.15,
               s=10, c="#7f7f7f", label='Training Samples')
-  # plt.xlim([np.min(X_test), np.max(X_test)])
-  # plt.ylim([np.min(y_test) * 1.25, np.max(y_test) * 1.35])
-  # plotting with no axis
   plt.axis('off')
-  #plt.axis([np.min(x_test), np.max(x_test),
-  #          np.min(y_test)  - 0.3 * np.abs(np.max(y_test)),
-  #          np.max(y_test)  + 0.3 * np.abs(np.max(y_test))])
-  #plt.legend(loc=2, bbox_to_anchor=(1.05, 1), borderaxespad=0.0)
   plt.savefig(os.path.join(out_dir, 'pred_test.png'))
   plt.savefig(os.path.join(out_dir, 'pred_test.pdf'), bbox_inches='tight')
   plt.close()
-
-
-
-
-  # pred_mean = np.mean(pred, axis=0).squeeze()
-  # pred_std = np.std(pred, axis=0).squeeze()
-  # print(pred_mean.shape, pred_std.shape)
-  # final_pred_mean_train = list(pred_mean)# np.mean(pred_mean, axis=0)
-  # final_pred_std_train = pred_std# np.mean(pred_std_train, axis=0)
-  # plt.figure(figsize=(10, 5))
-  # idx = np.argsort(y_train)
-  # plt.plot(final_pred_mean_train, label="Predictive mean")
-  # plt.fill_between(np.arange(len(final_pred_mean_train)),
-  #                  final_pred_mean_train + 2 * final_pred_std_train,
-  #                  final_pred_mean_train - 2 * final_pred_std_train,
-  #                  alpha=0.5,
-  #                  label="2-Sigma region")
-  # plt.plot(y_train, "-r", lw=3, label="Target Values")
-  # plt.legend(fontsize=14)
-  # plt.savefig(os.path.join(out_dir, 'pred_test.png'))
-  # plt.savefig(os.path.join(out_dir, 'pred_test.pdf'), bbox_inches='tight')
-
 
 
 
@@ -3271,24 +2511,27 @@ def test_plot_regression_pred_posterior(model, chain, velocity, mean, time,
 
 def plot_logistic_pred_posterior(model, chain, num_results, X_train, y_train,
                                  X_test, y_test, out_dir, name):
+  if name == 'hmc':
+    pred_fn = pred_forward_pass_hmc
+  else:
+    pred_fn = pred_forward_pass
+
   print('plotting logistic')
   idx = 0
   num_plot = np.min([num_results, 10])
   pred_array = np.zeros([num_plot, y_test.size])
+  if name == 'hmc':
+    pred_fn = pred_forward_pass_hmc
+
   for mcmc_idx in range(0, num_plot):
-    param_list_a = [x[mcmc_idx, ...] for x in chain]
-    param_list_b = [x[mcmc_idx + 1, ...] for x in chain]
-    param_list = [(a + b) / 2.0 for a, b in zip(param_list_a, param_list_b)]
+    param_list = [x[mcmc_idx, ...] for x in chain]
     pred_array[mcmc_idx, :] = tf.nn.sigmoid(
-        pred_forward_pass(model, param_list,
+        pred_fn(model, param_list,
                           X_test.astype(np.float32))).numpy().ravel()
     idx += 1
   pred_mean = np.mean(pred_array, axis=0)
   pred_mean_classification = np.round(pred_mean).astype(np.int64)
-  print(pred_mean_classification.shape)
-  print(pred_mean_classification)
-  # getting numpy version of test for plotting
-  X_test_np = X_test  #.numpy()
+  X_test_np = X_test 
   plt.scatter(X_test_np[pred_mean < 0.5, 0],
               X_test_np[pred_mean < 0.5, 1],
               color='b')
@@ -3313,7 +2556,7 @@ def plot_logistic_pred_posterior(model, chain, num_results, X_train, y_train,
   for i in range(0, num_results):
     param_list = [x[i, ...] for x in chain]
     pred_grid[idx, :] = tf.keras.activations.sigmoid(
-        pred_forward_pass(model, param_list, grid_2d).numpy().ravel())
+        pred_fn(model, param_list, grid_2d).numpy().ravel())
     idx += 1
 
   grid_mean = np.mean(pred_grid, axis=0)
@@ -3351,11 +2594,8 @@ def plot_logistic_pred_posterior(model, chain, num_results, X_train, y_train,
   cbar.ax.set_ylabel('Uncertainty (posterior predictive standard deviation)')
   plt.savefig(os.path.join(out_dir, 'grid_var_logistic_' + name + '.png'))
   plt.savefig(os.path.join(out_dir, 'grid_var_logistic_' + name + '.pdf'))
-
-  # weights_mean = [np.mean(x, axis=0) for x in weights_chain]
-  # bias_mean = [np.mean(x, axis=0) for x in biases_chain]
   pred_grid = tf.keras.activations.sigmoid(
-      pred_forward_pass(model, param_list, grid_2d).numpy().ravel())
+      pred_fn(model, param_list, grid_2d).numpy().ravel())
   fig, ax = plt.subplots()
   contour = ax.contourf(grid[0],
                         grid[1],
@@ -3388,87 +2628,6 @@ def plot_logistic_pred_posterior(model, chain, num_results, X_train, y_train,
   plt.savefig(
       os.path.join(out_dir, 'mc_approx_contour_logistic_' + name + '.pdf'))
   print('pred_mean = {}'.format(pred_mean))
-  # fig, ax = plt.subplots(figsize=(14, 8))
-  # x = np.linspace(-1.5, 1.5, 100)
-  # x = np.hstack([x, x])
-  # idx_array = np.arange(0, num_results, 5)
-  # pred = np.zeros(idx_array.size, x.shape[1])
-  # for idx in idx_array:
-  #   weights_list = [x[i, ...] for x in weights_chain]
-  #   biases_list = [x[i, ...] for x in biases_chain]
-  #   pred[idx, :] =  tf.keras.activations.sigmoid(
-  #     pred_forward_pass(model, weights_list, biases_list, x).numpy().ravel())
-  #   ax.plot(pred[idx, :])
-
-
-# def plot_image_pred_posterior(model, chain, num_results,
-#                               X_train, y_train, X_test, y_test,
-#                               save_dir, plt_dims=[28, 28]):
-#   """Plot misclassified with credible intervals"""
-#   classification = pred_mean(model, chain, X_test, y_test)
-#   display._display_accuracy(model, X_test, y_test, 'Testing Data')
-#   num_classes = 10
-#   # create a figure
-#   plt.figure()
-#   # iterate over all classes
-#   correct_preds = np.argmax(y_test, axis=1)
-#   for label_i in range(0, num_classes):
-#     # check to see if a directory exists. If it doesn't, create it.
-#     utils.check_or_mkdir(os.path.join(save_dir, str(label_i)))
-#     locs = np.where(np.logical_and(classification != correct_preds,
-#                                    y_test[:, label_i] == 1))
-#     pred_eval = np.zeros([n_samples, locs[0].size, num_classes])
-#     images = X_test[locs[0], ...]
-#     weights_chain = chain[::2]
-#     biases_chain = chain[1::2]
-#     idx = 0
-#     for i in range(n_samples - pred_eval.shape[0], n_samples):
-#       weights_list = [x[i, ...] for x in weights_chain]
-#       biases_list = [x[i, ...] for x in biases_chain]
-#       pred_eval[idx, ...] = pred_forward_pass(model, weights_list,
-#                                               biases_list, images)
-#       idx +=1
-#     # now get the mean and credible intervals for these images and plot them
-#     # creating a counter variable for each individual misclassified image
-#     count = 0
-#     x_tick = np.arange(0, 10)
-#     for im_idx in range(0, pred_eval.shape[1]):
-#       # approximate the mean and credible intervals
-#       cred_ints = display.mc_credible_interval(
-#         pred_eval[:, im_idx, :].reshape([-1, num_classes]),
-#         np.array([0.025, 0.975]))
-#       pred_mean = np.mean(pred_eval[:, im_idx, :], axis=0)
-#       # PLOTTING
-#       # formatting the credible intervals into what is needed to be plotted
-#       # with pyplot.errorbar()
-#       cred_plot = np.array([pred_mean - cred_ints[0, :],
-#                             cred_ints[1, :] - pred_mean])
-#       # reshape it to correct dims
-#       cred_plot = cred_plot.reshape(2, num_classes)
-#       #now lets plot it and save it
-#       plt.subplot(2, 1, 1)
-#       plt.imshow(images[im_idx].reshape(plt_dims), cmap='gray')
-#       plt.axis('off')
-#       plt.subplot(2, 1, 2)
-#       plt.errorbar(np.linspace(0, pred_mean.size - 1, pred_mean.size),
-#                    pred_mean.ravel(), yerr=cred_plot, fmt='o')
-#       plt.xlim(-1, num_classes)
-#       plt.ylim(-0.1, 1.1)
-#       plt.xticks(range(num_classes),
-#                  x_tick,
-#                  size='small',
-#                  rotation='vertical')
-#       plt.xlabel("class")
-#       plt.ylabel("Predicted Probability\nwith 95% CI")
-#       #plt.savefig(os.path.join(save_dir, str(label_i),
-#       #                         "{}_{}.png".format(label_i, count)))
-#       plt.savefig(os.path.join(save_dir, str(label_i),
-#                                "{}_{}.eps".format(label_i, count)),
-#                   format='eps', bbox_inches="tight")
-#       plt.clf()
-#       #increment counter
-#       count += 1
-
 
 def pred_mean(model,
               chain,
@@ -3581,6 +2740,7 @@ def plot_image_pred_posterior(model,
   num_classes = 10
   # create a figure
   plt.figure()
+  fig, axs = plt.subplots(2, 1)
   # iterate over all classes
   correct_preds = np.argmax(y_test, axis=1)
   for label_i in range(0, num_classes):
@@ -3621,6 +2781,7 @@ def plot_image_pred_posterior(model,
       cred_plot = cred_plot.reshape(2, num_classes)
       #now lets plot it and save it
       cmap = 'gray' if len(plt_dims) == 2 else None
+
       plt.subplot(2, 1, 1)
       print(plt_dims)
       plt.imshow(plot_images[im_idx].reshape(plt_dims), cmap=cmap)
@@ -3633,11 +2794,11 @@ def plot_image_pred_posterior(model,
                    fmt='o')
       plt.xlim(-1, num_classes)
       plt.ylim(-0.1, 1.1)
-      plt.xticks(range(num_classes), x_tick, size='small', rotation='vertical')
-      plt.xlabel("class")
-      plt.ylabel("Predicted Probability\nwith 95% CI")
-      #plt.savefig(os.path.join(save_dir, str(label_i),
-      #                         "{}_{}.png".format(label_i, count)))
+      plt.xticks(range(num_classes), x_tick, size='large', rotation='vertical')
+      plt.xlabel("class", fontsize=40)
+      plt.ylabel("Predicted Probability\nwith 95% CI", size=40)
+      plt.savefig(os.path.join(save_dir, str(label_i),
+                              "{}_{}.png".format(label_i, count)))
       plt.savefig(os.path.join(save_dir, str(label_i),
                                "{}_{}.eps".format(label_i, count)),
                   format='eps',
@@ -3845,8 +3006,12 @@ def plot_image_iter_pred_posterior(save_dir: str, plt_dims: list[int],
       # PLOTTING
       # formatting the credible intervals into what is needed to be plotted
       # with pyplot.errorbar()
+      # ensure there are no negative values
+      # can happen for super tiny preds with noise due to interpolation
+      # used in mc_credible_interval
       cred_plot = np.array(
-          [pred_mean_im - cred_ints[0, :], cred_ints[1, :] - pred_mean_im])
+          [np.maximum(0, pred_mean_im - cred_ints[0, :]),
+           np.maximum(0, cred_ints[1, :] - pred_mean_im)])
       # reshape it to correct dims
       cred_plot = cred_plot.reshape(2, num_classes)
       cmap = 'gray' if len(plt_dims) == 2 else None
@@ -3868,9 +3033,9 @@ def plot_image_iter_pred_posterior(save_dir: str, plt_dims: list[int],
                    fmt='o')
       plt.xlim(-1, num_classes)
       plt.ylim(-0.1, 1.1)
-      plt.xticks(range(num_classes), x_tick, size='small', rotation='vertical')
-      plt.xlabel("class")
-      plt.ylabel("Predicted Probability\nwith 95% CI")
+      plt.xticks(range(num_classes), x_tick, size='large', rotation='vertical')
+      plt.xlabel("class", fontsize=16)
+      plt.ylabel("Predicted Probability\nwith 95% CI", fontsize=16)
       #plt.savefig(os.path.join(save_dir, str(label_i),
       #                         "{}_{}.png".format(label_i, count)))
       plt.savefig(os.path.join(save_dir, str(label_i),
@@ -3884,29 +3049,29 @@ def plot_image_iter_pred_posterior(save_dir: str, plt_dims: list[int],
       plt.clf()
       # now make a separate plot of just the image and the
       # outputs separately
-      # plt.imshow(plt_image.reshape(plt_dims), cmap=cmap)
-      # plt.axis('off')
-      # plt.savefig(os.path.join(save_dir, str(label_i),
-      #                          "{}_{}_image.png".format(label_i, count)),
-      #             format='png',
-      #             bbox_inches="tight")
-      # plt.clf()
-      # plt.figure(figsize=(8, 4))
-      # plt.errorbar(np.linspace(0, pred_mean_im.size - 1, pred_mean_im.size),
-      #              pred_mean_im.ravel(),
-      #              yerr=cred_plot,
-      #              fmt='o')
-      # plt.xlim(-1, num_classes)
-      # plt.ylim(-0.1, 1.1)
-      # plt.xticks(range(num_classes), x_tick, size='small', rotation='vertical')
-      # plt.xlabel("class")
-      # # plt.ylabel("Predicted Probability\nwith 95% CI")
-      # plt.savefig(os.path.join(save_dir, str(label_i),
-      #                          "{}_{}_pred.pdf".format(label_i, count)),
-      #             format='pdf',
-      # bbox_inches="tight")
+      plt.imshow(plt_image.reshape(plt_dims), cmap=cmap)
+      plt.axis('off')
+      plt.savefig(os.path.join(save_dir, str(label_i),
+                               "{}_{}_image.png".format(label_i, count)),
+                  format='png',
+                  bbox_inches="tight")
+      plt.clf()
+      plt.figure(figsize=(8, 4))
+      plt.errorbar(np.linspace(0, pred_mean_im.size - 1, pred_mean_im.size),
+                   pred_mean_im.ravel(),
+                   yerr=cred_plot,
+                   fmt='o')
+      plt.xlim(-1, num_classes)
+      plt.ylim(-0.1, 1.1)
+      plt.xticks(range(num_classes), x_tick, size='large', rotation='vertical')
+      plt.xlabel("class", fontsize=16)
+      # plt.ylabel("Predicted Probability\nwith 95% CI")
+      plt.savefig(os.path.join(save_dir, str(label_i),
+                               "{}_{}_pred.pdf".format(label_i, count)),
+                  format='pdf',
+      bbox_inches="tight")
 
-      #increment counter
+      # increment counter
       count += 1
 
 
@@ -3930,9 +3095,20 @@ def create_entropy_hist(model,
                                   test_ds,
                                   num_classes=num_classes,
                                   data_desc_str='test')
+  np.save(os.path.join(save_dir, f'{data_name}_test_pred_posterior.npy'),
+          test_pred_posterior)
+  np.save(os.path.join(save_dir, f'{data_name}_test_pred_posterior_mean.npy'),
+          test_pred_mean_array)
   # now find the entropy value here
+  print(np.sum(np.isnan(test_pred_mean_array)))
+  print(np.min(test_pred_mean_array))
   entropy = -np.sum(test_pred_mean_array * np.log2(test_pred_mean_array + 1e-7),
                     axis=1)
+  print(entropy)
+  print(np.max(entropy))
+  print(np.min(entropy))
+  print(np.sum(np.isnan(entropy)))
+  print(np.sum(np.isinf(entropy)))
   np.save(os.path.join(save_dir, '{}_entropy.npy'.format(data_name)), entropy)
   plt.figure()
   plt.hist(entropy, 100, density=True)
@@ -3952,7 +3128,7 @@ def create_entropy_hist(model,
                          np.argmax(test_pred_mean_array, axis=1))
     print(f'neg ll = {likelihood.result().numpy()}, accuracy = {acc}')
     # now the reliability figure
-    fig = reliability_diagrams.reliability_diagram(np.argmax(label_array,
+    ece, fig = reliability_diagrams.reliability_diagram(np.argmax(label_array,
                                                              axis=1),
                                                    test_classification,
                                                    np.max(test_pred_mean_array,
@@ -3967,7 +3143,7 @@ def create_entropy_hist(model,
                                                    return_fig=True)
     fig.savefig(os.path.join(save_dir, '{}_calibration.pdf'.format(data_name)))
     fig.savefig(os.path.join(save_dir, '{}_calibration.png'.format(data_name)))
-
+    return acc, likelihood.result().numpy(), ece
 
 def create_entropy_hist_map(model,
                             save_dir,
@@ -4040,77 +3216,6 @@ def build_network(json_path, x_train, data_dimension_dict):
   _ = model(x_train)
   return model
 
-
-def bps_main_neurips_reg(model,
-                         ipp_sampler_str,
-                         likelihood_str,
-                         lambda_ref,
-                         num_results,
-                         num_burnin_steps,
-                         out_dir,
-                         bnn_neg_joint_log_prob,
-                         map_initial_state,
-                         X_train,
-                         y_train,
-                         X_test,
-                         y_test,
-                         batch_size,
-                         data_size,
-                         data_dimension_dict,
-                         plot_results=True,
-                         num_steps_between_results=0):
-  """main method for running BPS on model"""
-  print('running bps')
-  start_time = time.time()
-  print(X_train.shape, y_train.shape, X_test.shape, y_test.shape)
-  if ipp_sampler_str == 'adaptive':
-    ipp_sampler = AdaptiveSBPSampler
-  else:
-    ipp_sampler = SBPSampler
-  kernel = BPSKernel(target_log_prob_fn=bnn_neg_joint_log_prob,
-                     store_parameters_in_results=True,
-                     ipp_sampler=ipp_sampler,
-                     batch_size=batch_size,
-                     data_size=data_size,
-                     lambda_ref=lambda_ref)
-  # convert the init state into a tensor first
-  init_state = [tf.convert_to_tensor(x) for x in map_initial_state]
-  # creating the trace function
-  trace_fn = lambda _, pkr: pkr.acceptance_ratio
-  # BURNIN PHASE
-  # start sampling for burnin, and then discard these samples
-  bps_chain, _ = graph_hmc(num_results=num_burnin_steps,
-                           current_state=init_state,
-                           kernel=kernel,
-                           trace_fn=trace_fn)
-  # get the final state of the chain from the previous burnin iter
-  init_state = [x[-1] for x in bps_chain]
-  end_warmup_time = time.time()
-  print('time warmup = {}'.format(end_warmup_time - start_time))
-  # SAMPLING PHASE
-  # now loop over the actual samples from (hopefully) the posterior
-  bps_results, acceptance_ratio = graph_hmc(
-      num_results=num_results,
-      current_state=init_state,
-      num_steps_between_results=num_steps_between_results,
-      kernel=kernel,
-      trace_fn=trace_fn)
-  #    return_final_kernel_results=True,
-  print('acceptance_ratio = {}'.format(acceptance_ratio))
-  print(type(acceptance_ratio))
-  print('num acceptance_ratio > 1 = {}'.format(np.sum(
-      (acceptance_ratio > 1.0))))
-  bps_chain = bps_results
-  # save these samples to file
-  save_chain(bps_chain, out_dir)
-  print('finished sampling')
-  end_sampling_time = time.time()
-  print('total sampling time = {}'.format(end_sampling_time - start_time))
-  # plot the results if specified to
-  if (plot_results):
-    plot_regression_pred_posterior_neurips(model, bps_chain, num_results,
-                                           X_train, y_train, X_test, y_test,
-                                           out_dir, 'bps')
 
 
 def plot_regression_pred_posterior_neurips(model, chain, num_results, X_train,

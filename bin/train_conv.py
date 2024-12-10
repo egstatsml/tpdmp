@@ -19,9 +19,9 @@ if gpus:
 
 import tensorflow_probability as tfp
 import tensorflow_addons as tfa
-from tbnn.pdmp.bps import IterBPSKernel
+from tbnn.pdmp.pdmp import IterBPSKernel
 
-from tbnn.pdmp.poisson_process import (SBPSampler, PSBPSampler, AdaptivePSBPSampler, AdaptiveSBPSampler, InterpolationSampler)
+from tbnn.pdmp.poisson_process import InterpolationSampler
 from tbnn.pdmp.networks import get_network
 from tbnn.pdmp import networks
 
@@ -31,9 +31,11 @@ import tensorflow_models as tfm
 from tbnn.pdmp.model import (
     get_map_test, plot_density, get_model_state, pred_forward_pass, get_map,
     get_mle, trace_fn, graph_hmc, nest_concat, set_model_params, build_network, set_model_params_hmc,
-    bps_iter_main, hmc_main, nuts_main, boomerang_iter_main, pbps_iter_main,
+    bps_iter_main, boomerang_iter_main, pbps_iter_main,
     get_map_iter, sgld_iter_main, save_map_weights,
-    cov_pbps_test_iter_main, boomerang_test_iter_main, variational_iter_main, hmc_iter_main)
+    cov_pbps_test_iter_main, variational_iter_main, hmc_iter_main)
+
+from tbnn.pdmp.train_utils import *
 # import some helper functions
 #
 from tbnn.pdmp.nfnets import ScaledStandardizedConv2D
@@ -64,29 +66,6 @@ class NoDistribute():
 
   def experimental_distribute_dataset(self, dataset):
     return dataset
-
-class MyLR(tf.keras.optimizers.schedules.LearningRateSchedule):
-
-  def __init__(self,
-               init_lr,
-               warm_up_steps=2500.0,
-               decay_steps=140625.0,
-               name=None):
-    super().__init__()
-    self.init_lr = tf.convert_to_tensor(init_lr)
-    self.warm_up_steps = tf.convert_to_tensor(warm_up_steps)
-    self.decay_steps = tf.convert_to_tensor(decay_steps)
-
-  def __call__(self, step):
-    if step < self.warm_up_steps:
-      lr = self.init_lr * step / self.warm_up_steps
-    else:
-      step = min(step, self.decay_steps)
-      cosine_decay = 0.5 * (
-          1 + tf.math.cos(np.pi *
-                          (step - self.warm_up_steps) / self.decay_steps))
-      lr = (self.init_lr) * cosine_decay  #+ self.init_lr
-    return lr
 
 
 def get_data(data, batch_size, strategy):
@@ -173,48 +152,8 @@ def classify(model, dataset):
     label_list.extend(np.argmax(labels_batch, axis=1))
     classification_array = np.array(classification_list)
     correct_prediction = np.array(label_list)
-
   return classification_array, correct_prediction
 
-
-# @tf.function
-#
-
-
-def examine_sample_graph(kernel, init_state):
-  bps_results = tfp.mcmc.sample_chain(num_results=1,
-                                      current_state=init_state,
-                                      return_final_kernel_results=True,
-                                      kernel=kernel)
-  samples = bps_results.all_states
-  # initialise stafe for next iter
-  init_state = [x[-1, ...] for x in samples]
-  # final kernel results used to initialise next call of loop
-  kernel_results = bps_results.final_kernel_results
-  velocity = kernel_results.velocity
-  # now iterate over the time steps to evaluate the
-  #
-  i = tf.constant(0, dtype=tf.float32)
-  time_dt = tf.constant(0.2, dtype=tf.float32)
-  time = tf.Variable(0.0, dtype=tf.float32)
-  cond = lambda G, i: tf.less(i, 10)
-  G = tf.TensorArray(tf.float32,
-                     size=0,
-                     dynamic_size=True,
-                     clear_after_read=False)
-
-  def examine_loop(state, velocity, time, time_dt, G, i):
-    t = time + time_dt * tf.cast(i, tf.float32)
-    test = kernel.examine_event_intensity(state, velocity, t)
-    G = G.write(tf.cast(i, tf.int32), test)
-    i = i + 1
-    return G, i
-
-  G, i = tf.while_loop(cond,
-                       lambda G_l, i_l: examine_loop(init_state, velocity, time,
-                                                     time_dt, G_l, i_l),
-                       loop_vars=(G, i))
-  return G
 
 
 @tf.function
@@ -294,147 +233,79 @@ def examine_rate(model,
             test)
 
 
-def neg_log_likelihood(model, likelihood_fn, X, y, strategy):
-  """Compute the neg log likelihood of a model.
+def load_map_weights(model, args):
+  """Get map weights ready for sampling.
 
-    This function expects that all model parameters have already
-    been set.
+  For most network's, this will just load in the weights normally. For nfnets
+  where we did fine tuning on the final layer, we will load in the full keras
+  weights to load in, then we will call the get weights function which will get
+  the weights we are training from.
 
-    Parameters
-    ----------
-    model : keras.Moodel
-        model we are evaluating.
-    likelihood_fn : tfp.Distribution
-        Distribution that defines the log likelihood of our model.
-    X : tf.Tensor
-        Our input data.
-    y : tf.Tensor
-        output label's.
+  Parameters
+  ----------
+  model: keras.Model
+      keras model, needed for nfnets type model
+  args : cmdline ars
+      Command line args with map weights path and the network type
 
-    Returns
-    -------
-    Neg log likelihood.
-    """
-  logits = model(X)
-  # add the log likelihood now
-  log_likelihood_dist = likelihood_fn(logits)
-  lp = tf.reduce_sum(log_likelihood_dist.log_prob(y))
-  return -1.0 * lp
+  Returns
+  -------
+      list of tensors holding the MAP weights.
+
+  """
+  if args.network == 'nfnet':
+    # load in the weights saved for the entire network.
+    model.load_weights(args.map_path)
+    # need to set the right weights to trainable
+    for layer in model.layers:
+      if isinstance(layer, (tf.keras.layers.Dense, ScaledStandardizedConv2D)):
+        # need to add loss to the layer kernel and bias
+        layer.trainable = True
+        # if is nf base layers
+      elif "Functional" == layer.__class__.__name__:
+        for _layer in layer.layers:
+          if isinstance(_layer,
+                        (tf.keras.layers.Dense, ScaledStandardizedConv2D)):
+            _layer.trainable = True
+          else:
+            _layer.trainable = False
+            # if is any other kind of layer set it to be false
+      else:
+        layer.trainable = False
+        # now get the map weights for trainable variables we will be
+        # sampling from
+    print('checking model shapes')
+    map_initial_state = get_model_state(model)
+  elif args.network == 'resnet50_keras':
+    print(model.summary())
+    return model.trainable_variables
+  else:
+    with open(args.map_path, 'rb') as f:
+      map_initial_state = pickle.load(f)
+  return map_initial_state
 
 
-def bnn_neg_joint_log_prob_fn(model, likelihood_fn, X, y):
-  """Compute neg joint log prob for model.
+def normal_likelihood():
 
-    Neg joint log prob defined as
-
-    Parameters
-    ----------
-    model : keras.Model
-        Model that helps define likelihood.
-    likelihood_fn : tfp.Distribution
-        Distribution with the log_prob method.
-    X : tf.Tensor
-        input array
-    y : tf.Tensor
-        output label's.
-
-    Returns
-    -------
-    callable that will compute the neg joint log prob, that requires model parameters to be supplied as an argument.
-    """
-
-  def _fn(*param_list):
-    with tf.name_scope('bnn_joint_log_prob_fn'):
-      # set the model params
-      m = set_model_params(model, param_list)
-      # print('current  model params ttttt= {}'.format(model.layers[1].kernel))
-      # neg log likelihood of predicted labels
-      neg_ll = neg_log_likelihood(m, likelihood_fn, X, y)
-      # now get the losses from the prior (negative log prior)
-      # these are stored within the models `losses` variable
-      neg_lp = tf.reduce_sum(m.losses)
-      # add them together for the total loss
-      return neg_ll + neg_lp
+  def _fn(y, pred):
+    y = tf.cast(y, tf.float32)
+    dist = tfd.Normal(loc=pred, scale=1.0)
+    return -1.0 * dist.log_prob(y)
 
   return _fn
 
 
-def bnn_hmc_neg_joint_log_prob_fn(model, likelihood_fn, X, y):
-  """Compute neg joint log prob for model for HMC
-
-    Is essentially the same as the neg joint log prob used
-    for pdmp methods, but uses a different method to set model params.
-
-
-    Parameters
-    ----------
-    model : keras.Model
-        Model that helps define likelihood.
-    likelihood_fn : tfp.Distribution
-        Distribution with the log_prob method.
-    X : tf.Tensor
-        input array
-    y : tf.Tensor
-        output label's.
-
-    Returns
-    -------
-    callable that will compute the neg joint log prob, that requires model parameters to be supplied as an argument.
-    """
-
-  def _fn(*param_list):
-    with tf.name_scope('bnn_joint_log_prob_fn'):
-      # set the model params
-      m = set_model_params(model, param_list)
-      # print('current  model params ttttt= {}'.format(model.layers[1].kernel))
-      # neg log likelihood of predicted labels
-      neg_ll = neg_log_likelihood(m, likelihood_fn, X, y)
-      # now get the losses from the prior (negative log prior)
-      # these are stored within the models `losses` variable
-      neg_lp = tf.reduce_sum(m.losses)
-      # add them together for the total loss
-      return neg_ll + neg_lp
-
-  return _fn
-
-
-
-
-def loss_object_opt(model, likelihood_fn, X, y):
-  with tf.name_scope('loss_object_opt'):
-    return neg_joint(model, likelihood_fn, X, y)
-  #pred = model(X)
-  #loss = likelihood_fn(y, pred)
-  #return loss
-
-
-def neg_joint(model, likelihood_fn, X, y):
+def neg_joint(model, likelihood_fn, X, y, dataset_size, batch_size):
   with tf.name_scope('neg_joint'):
     # neg log likelihood of predicted labels
     #neg_ll = neg_log_likelihood(model, likelihood_fn, X, y)
     pred = model(X)
-    neg_ll = likelihood_fn(y, pred)
+    neg_ll = dataset_size / batch_size * likelihood_fn(y, pred)
     # now get the losses from the prior (negative log prior)
     # these are stored within the models `losses` variable
+    # the scale regularization loss will handle the training strategy if using
+    # multiple gpus
     neg_lp = tf.nn.scale_regularization_loss(tf.reduce_sum(model.losses))
-    # add them together for the total loss
-    return neg_ll + neg_lp
-
-
-def loss_object_sampling(model, likelihood_fn, X, y, param_list):
-  with tf.name_scope('loss_object_sampling'):
-    # first set the model params
-    model = set_model_params(model, param_list)
-    return neg_joint(model, likelihood_fn, X, y)
-
-
-def loss_object(model, likelihood_fn, X, y):
-  with tf.name_scope('bnn_joint_log_prob_fn'):
-    # neg log likelihood of predicted labels
-    neg_ll = likelihood_fn(y, pred)
-    # now get the losses from the prior (negative log prior)
-    # these are stored within the models `losses` variable
-    neg_lp = tf.reduce_sum(model.losses)
     # add them together for the total loss
     return neg_ll + neg_lp
 
@@ -448,7 +319,7 @@ def iter_bnn_neg_joint_log_prob(model, likelihood_fn, dataset_iter):
   return _fn
 
 
-def gradient_step(model, likelihood_fn, X, y, param_list):
+def gradient_step(model, likelihood_fn, X, y, dataset_size, batch_size, param_list):
   # set the model params
   print(f'grad_step param list shape={len(param_list)}')
   print(f'grad_step : {param_list[-1]}')
@@ -458,19 +329,19 @@ def gradient_step(model, likelihood_fn, X, y, param_list):
   with tf.GradientTape() as tape:
     # for i in range(0, len(param_list)):
     #   tape.watch(param_list[i])
-    neg_log_prob = neg_joint(model, likelihood_fn, X, y)
+    neg_log_prob = neg_joint(model, likelihood_fn, X, y, dataset_size, batch_size)
     gradients = tape.gradient(neg_log_prob,  model.trainable_variables)
   return gradients
 
 
 
-def hmc_step(model, likelihood_fn, X, y, param_list):
+def hmc_step(model, likelihood_fn, X, y, dataset_size, batch_size, param_list):
   """For HMC, just want to compute the neg joint log prob"""
   # set the model params
   print(f'grad_step param list shape={len(param_list)}')
   print(f'grad_step : {param_list[-1]}')
   model = set_model_params_hmc(model, param_list)
-  neg_log_prob = neg_joint(model, likelihood_fn, X, y)
+  neg_log_prob = neg_joint(model, likelihood_fn, X, y, dataset_size, batch_size)
   # need to remove the negative for HMC with tfp
   return -1.0 * neg_log_prob
 
@@ -515,17 +386,17 @@ def sgld_step(compute_loss, model, X, y, optimizer):
   gradients = tape.gradient(neg_log_prob, model.trainable_variables)
   # add some Gaussian noise to the gradients, where the variance is
   # 2 times the learning rate for the optimizer
-  dist = tfd.Normal(loc=0.0,
-                    scale=tf.math.sqrt(optimizer.learning_rate * 2))
+  dist = [tfd.Normal(loc=tf.zeros_like(g),
+                     scale=tf.math.sqrt(optimizer.learning_rate * 2)) for g in gradients]
 
-  grad_noise = [dist.sample(x.shape) for x in gradients]
+  grad_noise = [x.sample() for x in dist]
   noisy_grads = [g + n for g, n in zip(gradients, grad_noise)]
-  optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+  optimizer.apply_gradients(zip(noisy_grads, model.trainable_variables))
   return neg_log_prob
 
 
 
-def distributed_gradient_step(model, likelihood_fn, X, y, strategy):
+def distributed_gradient_step(model, likelihood_fn, X, y, dataset_size, batch_size, strategy):
 
   def _fn(param_list):
     per_replica_gradient = strategy.run(gradient_step,
@@ -534,6 +405,8 @@ def distributed_gradient_step(model, likelihood_fn, X, y, strategy):
                                             likelihood_fn,
                                             X,
                                             y,
+                                            dataset_size,
+                                            batch_size,
                                             param_list,
                                         ))
     return strategy.reduce(tf.distribute.ReduceOp.SUM,
@@ -560,13 +433,15 @@ def distributed_hmc_step(model, likelihood_fn, X, y, strategy):
 
 
 
-def hmc_step_wrapper(model, likelihood_fn, X, y, strategy):
+def hmc_step_wrapper(model, likelihood_fn, X, y, dataset_size, batch_size, strategy):
 
   def _fn(*param_list):
     joint_log_prob = hmc_step(model,
                               likelihood_fn,
                               X,
                               y,
+                              dataset_size,
+                              batch_size,
                               param_list)
     return joint_log_prob
   return _fn
@@ -606,12 +481,13 @@ def distributed_sgld_step(compute_loss, model, X, y, strategy, optimizer):
 
 
 
-def iter_grad_fn(model, likelihood_fn, dataset_iter, strategy):
+def iter_grad_fn(model, likelihood_fn, dataset_iter, dataset_size, batch_size, strategy):
 
+  dataset_size = tf.convert_to_tensor(dataset_size, dtype=tf.float32)
+  batch_size = tf.convert_to_tensor(batch_size, dtype=tf.float32)
   def _fn():
     X, y = dataset_iter.next()
-    return distributed_gradient_step(model, likelihood_fn, X, y, strategy)
-
+    return distributed_gradient_step(model, likelihood_fn, X, y, dataset_size, batch_size, strategy)
   return _fn
 
 
@@ -632,11 +508,13 @@ def iter_sgld_fn(loss_fn, model, dataset_iter, strategy, optimizer):
 
   return _fn
 
-def iter_hmc_fn(model, likelihood_fn, dataset_iter, strategy):
+def iter_hmc_fn(model, likelihood_fn, dataset_iter, dataset_size, batch_size, strategy):
 
+  dataset_size = tf.convert_to_tensor(dataset_size, dtype=tf.float32)
+  batch_size = tf.convert_to_tensor(batch_size, dtype=tf.float32)
   def _fn():
     X, y = dataset_iter.next()
-    return hmc_step_wrapper(model, likelihood_fn, X, y, strategy)
+    return hmc_step_wrapper(model, likelihood_fn, X, y, dataset_size, batch_size, strategy)
   return _fn
 
 
@@ -644,7 +522,10 @@ def iter_hmc_fn(model, likelihood_fn, dataset_iter, strategy):
 def hessian_diag_step(model, likelihood_fn, X, y):
   with tf.GradientTape() as tape_hessian:
     with tf.GradientTape() as tape_grad:
-      neg_log_prob = neg_joint(model, likelihood_fn, X, y)
+      # won't scale neg log prob with data/batch size for hessian approx
+      neg_log_prob = neg_joint(model, likelihood_fn, X, y,
+                               tf.convert_to_tensor(1.0, dtype=tf.float32),
+                               tf.convert_to_tensor(1.0, dtype=tf.float32))
     gradients = tape_grad.gradient(neg_log_prob, model.trainable_variables)
   hessian_diag = tape_hessian.gradient(gradients, model.trainable_variables)
   return hessian_diag
@@ -708,7 +589,7 @@ def create_sgld_loss_fn(model, likelihood_fn, args, data_dimension_dict, strateg
       neg_lp = tf.reduce_sum(model.losses)
       # now scale the neg ll and the neg log prior based on the distribution strategy
       per_example_loss = tf.nn.compute_average_loss(
-          neg_ll, global_batch_size=batch_size
+          neg_ll_scaled, global_batch_size=batch_size
       ) + tf.nn.scale_regularization_loss(neg_lp)
       return per_example_loss
   return compute_loss
@@ -854,66 +735,7 @@ def get_optimizer(optimizer_str,
   return opt
 
 
-def load_map_weights(model, args):
-  """Get map weights ready for sampling.
 
-  For most network's, this will just load in the weights normally. For nfnets
-  where we did fine tuning on the final layer, we will load in the full keras
-  weights to load in, then we will call the get weights function which will get
-  the weights we are training from.
-
-  Parameters
-  ----------
-  model: keras.Model
-      keras model, needed for nfnets type model
-  args : cmdline ars
-      Command line args with map weights path and the network type
-
-  Returns
-  -------
-      list of tensors holding the MAP weights.
-
-  """
-  if args.network == 'nfnet':
-    # load in the weights saved for the entire network.
-    model.load_weights(args.map_path)
-    # need to set the right weights to trainable
-    for layer in model.layers:
-      if isinstance(layer, (tf.keras.layers.Dense, ScaledStandardizedConv2D)):
-        # need to add loss to the layer kernel and bias
-        layer.trainable = True
-        # if is nf base layers
-      elif "Functional" == layer.__class__.__name__:
-        for _layer in layer.layers:
-          if isinstance(_layer,
-                        (tf.keras.layers.Dense, ScaledStandardizedConv2D)):
-            _layer.trainable = True
-          else:
-            _layer.trainable = False
-            # if is any other kind of layer set it to be false
-      else:
-        layer.trainable = False
-        # now get the map weights for trainable variables we will be
-        # sampling from
-    print('checking model shapes')
-    map_initial_state = get_model_state(model)
-  elif args.network == 'resnet50_keras':
-    print(model.summary())
-    return model.trainable_variables
-  else:
-    with open(args.map_path, 'rb') as f:
-      map_initial_state = pickle.load(f)
-  return map_initial_state
-
-
-def normal_likelihood():
-
-  def _fn(y, pred):
-    y = tf.cast(y, tf.float32)
-    dist = tfd.Normal(loc=pred, scale=1.0)
-    return -1.0 * dist.log_prob(y)
-
-  return _fn
 
 
 def main(args):
@@ -924,7 +746,8 @@ def main(args):
   (training_iter, training_ds, test_ds, orig_test_ds, data_dimension_dict,
    label_dict) = get_data(args.data, args.batch_size, strategy)
   # if is regression model
-  if args.data in ['toy_a', 'toy_b', 'toy_c', 'moons', 'boston']:
+  if args.data in ['toy_a', 'toy_b', 'toy_c', 'moons', 'boston',
+                   'naval', 'energy', 'yacht', 'concrete']:
     input_dims = [data_dimension_dict['in_dim']]
   else:
     input_dims = [
@@ -970,7 +793,11 @@ def main(args):
   print(model)
   print(model.summary())
   print('model type = {}'.format(model))
-  bnn_neg_joint_log_prob = iter_grad_fn(model, likelihood_fn, training_iter,
+  bnn_neg_joint_log_prob = iter_grad_fn(model,
+                                        likelihood_fn,
+                                        training_iter,
+                                        data_dimension_dict['dataset_size'],
+                                        args.batch_size,
                                         strategy)
   hessian_fn = iter_hessian_diag_fn(model, likelihood_fn, training_iter,
                                     strategy)
@@ -1021,7 +848,7 @@ def main(args):
       print('Test accuracy from MAP = {}'.format(accuracy))
     # plot response for a regression model
     elif args.likelihood == 'normal':
-      if args.data in ['boston']:
+      if args.data in ['boston', 'naval', 'energy', 'yacht', 'concrete']:
         # no plots for the UCI data
         pass
       else:
@@ -1079,41 +906,40 @@ def main(args):
                   orig_test_ds,
                   args.likelihood,
                   args.batch_size,
-                  args.batch_size,
+                  data_dimension_dict['dataset_size'],
                   data_dimension_dict,
-                  # plot_results=~args.no_plot,
-                  plot_results=False,
-                  run_eval=False,
+                  plot_results=args.eval,
+                  run_eval=args.eval,
                   num_steps_between_results=args.steps_between)
   if args.boomerang:
-    boomerang_test_iter_main(model,
-                             args.ipp_sampler,
-                             args.ref,
-                             args.std_ref,
-                             args.num_results,
-                             args.num_burnin,
-                             args.out_dir,
-                             args.num_loops,
-                             hessian_fn,
-                             bnn_neg_joint_log_prob,
-                             strategy,
-                             likelihood_fn,
-                             map_initial_state,
-                             training_iter,
-                             test_ds,
-                             orig_test_ds,
-                             args.likelihood,
-                             args.batch_size,
-                             args.batch_size,
-                             data_dimension_dict,
-                             # plot_results=~args.no_plot,
-                             plot_results=False,
-                             run_eval=False,
-                             num_steps_between_results=args.steps_between)
+    boomerang_iter_main(model,
+                        args.ipp_sampler,
+                        args.ref,
+                        args.std_ref,
+                        args.num_results,
+                        args.num_burnin,
+                        args.out_dir,
+                        args.num_loops,
+                        hessian_fn,
+                        bnn_neg_joint_log_prob,
+                        strategy,
+                        likelihood_fn,
+                        map_initial_state,
+                        training_iter,
+                        test_ds,
+                        orig_test_ds,
+                        args.likelihood,
+                        args.batch_size,
+                        data_dimension_dict['dataset_size'],
+                        data_dimension_dict,
+                        plot_results=args.eval,
+                        run_eval=args.eval,
+                        num_steps_between_results=args.steps_between)
   if args.cov_pbps:
     cov_pbps_test_iter_main(model,
                             args.ipp_sampler,
                             args.ref,
+                            args.cov_ref,
                             args.std_ref,
                             args.num_results,
                             args.num_burnin,
@@ -1126,13 +952,11 @@ def main(args):
                             orig_test_ds,
                             args.likelihood,
                             args.batch_size,
-                            args.batch_size,
+                            data_dimension_dict['dataset_size'],
                             data_dimension_dict,
-                            plot_results=False,
-                            run_eval=False,
-                            # plot_results=~args.no_plot,
+                            plot_results=args.eval,
+                            run_eval=args.eval,
                             num_steps_between_results=args.steps_between)
-
   if args.pbps:
     pbps_iter_main(model,
                    args.ipp_sampler,
@@ -1149,11 +973,10 @@ def main(args):
                    orig_test_ds,
                    args.likelihood,
                    args.batch_size,
-                   args.batch_size,
+                   data_dimension_dict['dataset_size'],
                    data_dimension_dict,
-                   # plot_results=~args.no_plot,
-                   plot_results=False,
-                   run_eval=False,
+                   plot_results=args.eval,
+                   run_eval=args.eval,
                    num_steps_between_results=args.steps_between)
   if args.vi:
     # create a likelihood that will use sum reduction
@@ -1173,27 +996,28 @@ def main(args):
     variational_iter_main(model,
                           args.num_results,
                           args.out_dir,
-                        likelihood_vi_fn,
+                          likelihood_vi_fn,
                           optimizer,
-                        map_initial_state,
-                        training_ds,
-                        test_ds,
-                        orig_test_ds,
-                        args.likelihood,
-                        args.batch_size,
-                        args.batch_size,
-                        data_dimension_dict,
-                        plot_results=~args.no_plot,
-                        run_eval=True)
+                          map_initial_state,
+                          training_ds,
+                          test_ds,
+                          orig_test_ds,
+                          args.likelihood,
+                          args.batch_size,
+                          args.batch_size,
+                          data_dimension_dict,
+                          plot_results=args.eval,
+                          run_eval=args.eval)
 
 
 
-  if args.sgld:
+
+  if args.sgld or args.sgld_nd:
+    schedule = None if args.sgld_nd else 'linear'
     optimizer = get_optimizer('sgd',
                               args.lr,
                               strategy,
-                              schedule='linear',
-                              # schedule= None,
+                              schedule=schedule,
                               momentum=0.0,
                               t_mul=0.0,
                               m_mul=0.0,
@@ -1219,16 +1043,16 @@ def main(args):
                    orig_test_ds,
                    args.likelihood,
                    data_dimension_dict,
-                   # plot_results=~args.no_plot,
-                   # run_eval=True,
-                   plot_results=False,
-                   run_eval=False,
+                   plot_results=args.eval,
+                   run_eval=args.eval,
                    num_steps_between_results=args.steps_between)
   if args.hmc:
     # get the normal log prob (not the negative)
     bnn_joint_log_prob = iter_hmc_fn(model,
                                      likelihood_fn,
                                      training_iter,
+                                     data_dimension_dict['dataset_size'],
+                                     args.batch_size,
                                      strategy)
 
     hmc_iter_main(model,
@@ -1244,8 +1068,8 @@ def main(args):
                   orig_test_ds,
                   args.likelihood,
                   data_dimension_dict,
-                  plot_results=False,#~args.no_plot,
-                  run_eval=False,
+                  plot_results=args.eval,
+                  run_eval=args.eval,
                   num_steps_between_results=args.steps_between)
 
 def check_cmd_args(args):
@@ -1462,6 +1286,12 @@ if __name__ == '__main__':
                       nargs='?',
                       const=True,
                       help='whether to run Cov precond. BPS')
+  parser.add_argument('--cov_ref',
+                      type=float,
+                      default=1.0,
+                      nargs='?',
+                      const=True,
+                      help='refresh rate for cov sampler')
   parser.add_argument('--pbps',
                       type=bool,
                       default=False,
@@ -1474,6 +1304,12 @@ if __name__ == '__main__':
                       nargs='?',
                       const=True,
                       help='whether to run sgld')
+  parser.add_argument('--sgld_nd',
+                      type=bool,
+                      default=False,
+                      nargs='?',
+                      const=True,
+                      help='whether to run sgld with no decay')
   parser.add_argument('--vi',
                       type=bool,
                       default=False,
@@ -1536,12 +1372,12 @@ if __name__ == '__main__':
                       const=True,
                       help='whether should skip logging to neptune or not')
   parser.add_argument(
-      '--no_plot',
+      '--eval',
       type=bool,
       default=False,
       nargs='?',
       const=True,
-      help='whether should skip plotting or getting pred metrics')
+      help='whether should run evaluation')
   args = parser.parse_args(sys.argv[1:])
   # now lets check all the arguments
   args = check_cmd_args(args)
@@ -1562,5 +1398,4 @@ if __name__ == '__main__':
         params=exp_params,
         tags=exp_tags,
         upload_source_files=[args.config, './test_conv.py'])
-
   main(args)

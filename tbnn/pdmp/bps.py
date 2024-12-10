@@ -349,21 +349,8 @@ class BPSKernel(tfp.mcmc.TransitionKernel):
       Next velocity sampled from a Normal dist
     """
     tf.print('am refreshing')
-    # normal = tfd.Normal(0., 1.0)
-    # new_v = [normal.sample(x.shape) for x in current_velocity_parts]
-    # new_norm = tf.sqrt(utils.compute_l2_norm(new_v))
-    # new_v = [v / new_norm for v in new_v]
-    # uniform = tfd.Uniform(low=-1.0, high=1.0)
-    # new_v = [uniform.sample(x.shape) for x in current_velocity_parts]
-    # new_norm = tf.sqrt(utils.compute_l2_norm(new_v))
-    # new_v = [v / new_norm for v in new_v]
     dist = tfd.Normal(loc=0.0, scale=self.std_ref)
     new_v = [dist.sample(x.shape) for x in current_velocity_parts]
-    # new_norm = tf.sqrt(utils.compute_l2_norm(new_v))
-    # new_v = [v / new_norm for v in new_v]
-
-
-
     return new_v
 
 
@@ -883,66 +870,6 @@ class PBPSKernel(BPSKernel):
     dist = tfd.Normal(loc=0.0, scale=self.std_ref)
     new_v = [dist.sample(x.shape) for x in current_velocity_parts]
     return (new_v, current_preconditioner_parts, current_pre)
-
-
-
-  # def collision_velocity(self, next_state, current_velocity_parts,
-  #                        current_preconditioner_parts,
-  #                        current_pre_parts):
-  #   """update the velocity based on simulated collision with preconditioner
-
-  #   Refer to `BPSKernel.collision_velocity` for more info in type of collision.
-
-  #   Is updated here to include preconditioner as done in SBPS paper.
-
-  #   Args:
-  #     next_state (list(array)):
-  #       next position for which we need to compute collision direction
-  #     current_velocity_parts (list(array)):
-  #       parts of the current velocity
-  #     current_preconditioner_parts (list(array)):
-  #       parts of the current preconditioner
-  #     current_pre_parts (List(tf.Tensor)):
-  #       current "pre" parts for the pSBPS update, refer to class docstring
-  #       for an elaboration on this var.
-
-  #   Returns:
-  #     the updated velocity for the next step based on collision dynamics with
-  #     preconditioner used in SBPS paper.
-  #   """
-  #   tf.print('am bouncing')
-  #   # need to compute the grad for the newest position
-  #   _, grads_target_log_prob = mcmc_util.maybe_call_fn_and_grads(
-  #     self.target_log_prob_fn, next_state, name='sbps_collision_update')
-  #   # update the preconditioner component
-  #   pre = [self.beta * tf.square(g) + (1.0 - self.beta) * a for a, g in zip(
-  #     current_pre_parts, grads_target_log_prob)]
-  #   # make sure there aren't any negative components in here
-  #   # there shouldn't be but my paranoia comes into play here
-  #   pre = [tf.clip_by_value(a, self.epsilon, 10e10) for a in pre]
-  #   # getting the unnormalised preconditioner scaler
-  #   # the two `reduce_sum()` ops are needed as will be different number of
-  #   # dimensions for the kernel and biases. then divide by the
-  #   # number of parameters to normalise it
-  #   num_params = tf.cast(
-  #     tf.math.reduce_sum([tf.math.reduce_prod(x.shape) for x in pre]),
-  #     tf.float32)
-  #   pre_hat = tf.math.reduce_sum(
-  #     [tf.reduce_sum(tf.math.divide(1.0, (tf.sqrt(a) + self.epsilon))) for a in pre])
-  #   pre_hat = tf.divide(pre_hat, num_params)
-  #   # can now find the preconditioner values
-  #   preconditioner = [tf.divide(pre_hat, tf.sqrt(a) + self.epsilon) for a in pre]
-  #   # find the preconditioned gradients now
-  #   preconditioned_grads = [tf.math.multiply(a, g) for a, g in zip(preconditioner, grads_target_log_prob)]
-  #   grads_norm = utils.compute_l2_norm(preconditioned_grads)
-  #   # now need to compute the inner product of the grads_target and the velocity
-  #   dot_pre_grad_velocity = utils.compute_dot_prod(preconditioned_grads,
-  #                                                  current_velocity_parts)
-  #   # can now compute the new velocity from the simulated collision
-  #   new_v = [v - 2. * u * dot_pre_grad_velocity / grads_norm for u, v in zip(
-  #     preconditioned_grads, current_velocity_parts)]
-  #   return (new_v, preconditioner, pre)
-
 
 
   def collision_velocity(self, next_state, current_velocity_parts,

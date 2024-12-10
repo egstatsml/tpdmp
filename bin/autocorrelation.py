@@ -23,27 +23,22 @@ import json
 tfd = tfp.distributions
 
 for data in ['cifar_10', 'svhn', 'fashion_mnist', 'mnist']:
-for data in ['svhn']:
-  if data in ['cifar_10', 'svhn']:
+  if data in ['cifar_10', 'svhn', 'cifar_100']:
     data_model = data + "_resnet"
   else:
     data_model = data + "_lenet"
 
   # include the legend in the plots only for CIFAR-10
-  # include_legend = 'cifar_10' in data
-  include_legend = True
+  include_legend = 'cifar_10' in data
+  # include_legend = True
 
-  save_dirs = [f'/home/ethan/data/ethan/data/pdmp/uai2023_sgd/{data_model}_bps_interpolation',
-               f'/home/ethan/data/ethan/data/pdmp/uai2023_sgd/{data_model}_cov_pbps_interpolation',
-               f'/home/ethan/data/ethan/data/pdmp/uai2023_sgd/{data_model}_boomerang_interpolation',
-               f'/home/ethan/data/ethan/data/pdmp/uai2023_sgd/{data_model}_sgld',
-               f'/home/ethan/data/ethan/data/pdmp/uai2023_sgd/{data_model}_sgld_no_decay',
-               f'/home/ethan/data/ethan/data/pdmp/uai2023_sgd/{data_model}_hmc',]
+  save_dirs = [f'outdir/{data_model}_bps_interpolation',
+               f'outdir/{data_model}_cov_pbps_interpolation',
+               f'outdir/{data_model}_boomerang_interpolation',
+               f'outdir/{data_model}_sgld',
+               f'outdir/{data_model}_sgld_no_decay',
+               f'outdir/{data_model}_hmc',]
   sampler_names = ['BPS' ,r'$\sigma$BPS', 'Boomerang', 'SGLD', 'SGLD-ND', "SGHMC"]
-  # save_dir = '/home/ethan/data/ethan/data/pdmp/uai2023/fashion_mnist_lenet_boomerang_interpolation'
-  # save_dir = '/home/ethan/data/ethan/data/pdmp/uai2023/fashion_mnist_lenet_bps_interpolation'
-  # save_dir = '/home/ethan/data/ethan/data/pdmp/uai2023/fashion_mnist_lenet_cov_pbps_interpolation'
-  # save_dir = '/home/ethan/data/ethan/data/pdmp/uai2023/fashion_mnist_lenet_sgld'
   idx = 0
   samples_list = []
   autocorr_list = []
@@ -54,34 +49,26 @@ for data in ['svhn']:
     print(chain_files)
     with open(chain_files[0], 'rb') as f:
       chain = pickle.load(f)
-      # get just the weights from the last layer
-      # print(len(chain))
-      # print(chain[0].shape)
-      # print(chain[0][0,0,0,0,0])
-      # print(chain[0][1,0,0,0,0])
       samples = np.concatenate([x.numpy().reshape(x.shape[0], -1) for x in chain], axis=1)
-      # print(samples.shape)
-      # print(samples[0:2, 0])
-      # time.sleep(10)
-      # samples = chain[0].numpy()
-      # print(samples[:, 0])
-      # print(samples.reshape(200, -1)[:, 0])
       samples = samples.reshape(samples.shape[0], -1)
+      # save to a list as will be using later on for plotting
       samples_list.append(samples)
-      # time.sleep(2)
-      pca = PCA(whiten=True).fit(samples)
-      # print(samples.shape)
-      # print(samples.reshape(samples.shape[0], -1).shape)
+      pca = PCA(whiten=False).fit(samples)
       transformed = pca.transform(samples)
+      print(transformed.shape)
+      # to compute ESS over all channels, need as [Samples, features]
+      # which is what is returned from PCA
       ess = tfp.mcmc.effective_sample_size(transformed)
       print(f'sampler = {sampler_names[i]} ess max = {ess[0]}, ess second = {ess[1]}, ess min {ess[-1]}')
+      ess_arviz_ind = arviz.ess(transformed[:, 0])
+      print(f'arviz ind sampler = {sampler_names[i]} ess max = {ess_arviz_ind}')
+      ess_tfp_ind = tfp.mcmc.effective_sample_size(transformed[:, 0])
+      print(f'tfp individual sampler = {sampler_names[i]} ess max = {ess_tfp_ind}')
+      # save to a list as will be using later on for plotting
       transformed_list.append(transformed)
       autocorr = arviz.autocorr(np.transpose(transformed))
-      print(np.var(transformed[:, 0]))
-      # autocorr = arviz.autocorr(np.transpose(samples.reshape(samples.shape[0], -1)))
-      print(autocorr.shape)
+      print(f'var first principal component = {np.var(transformed[:, 0])}')
       autocorr_list.append(autocorr)
-
 
   plt.figure()
   for i in range(0, len(sampler_names)):
@@ -113,8 +100,6 @@ for data in ['svhn']:
   if include_legend:
     plt.legend()
 
-  # plt.legend()
-  # plt.legend()
   plt.savefig(os.path.join('autocorr_figs', f'{data}/autocorr_min.pdf'),
               bbox_inches='tight')
   plt.clf()
@@ -154,14 +139,26 @@ for data in ['svhn']:
   for i in range(0, len(sampler_names)):
     # if sampler_names[i] == 'Boomerang' or sampler_names[i] == 'SGLD':
     #   c = 'green' if sampler_names[i] == 'Boomerang' else 'red'
-    plt.plot(np.squeeze(samples_list[i][:,0]), label=sampler_names[i])#, color=c)
+    plt.plot(np.squeeze(samples_list[i][:,-20]), label=sampler_names[i])#, color=c)
   plt.xlim([0, 200])
   plt.xlabel('lag')
   if include_legend:
     plt.legend()
+  plt.legend()
+  plt.savefig(os.path.join('autocorr_figs', f'{data}/trace_param_last.pdf'),
+              bbox_inches='tight')
 
-  # plt.legend()
-  plt.savefig(os.path.join('autocorr_figs', f'{data}/trace_param.pdf'),
+  plt.clf()
+  for i in range(0, len(sampler_names)):
+    # if sampler_names[i] == 'Boomerang' or sampler_names[i] == 'SGLD':
+    #   c = 'green' if sampler_names[i] == 'Boomerang' else 'red'
+    plt.plot(np.squeeze(samples_list[i][:, 20]), label=sampler_names[i])#, color=c)
+  plt.xlim([0, 200])
+  plt.xlabel('lag')
+  if include_legend:
+    plt.legend()
+  plt.legend()
+  plt.savefig(os.path.join('autocorr_figs', f'{data}/trace_param_first.pdf'),
               bbox_inches='tight')
 
   # # load in the first chain file to get the dimensions of everything

@@ -70,6 +70,7 @@ def compute_calibration(true_labels, pred_labels, confidences, num_bins=10):
   }
 
 
+
 def _reliability_diagram_subplot(ax,
                                  bin_data,
                                  draw_ece=True,
@@ -274,15 +275,16 @@ def reliability_diagram(true_labels,
     """
   bin_data = compute_calibration(true_labels, pred_labels, confidences,
                                  num_bins)
-  return _reliability_diagram_combined(bin_data,
-                                       draw_ece,
-                                       draw_bin_importance,
-                                       draw_averages,
-                                       title,
-                                       figsize=figsize,
-                                       dpi=dpi,
-                                       return_fig=return_fig)
-
+  combined_reliability_diagram =  _reliability_diagram_combined(
+    bin_data,
+    draw_ece,
+    draw_bin_importance,
+    draw_averages,
+    title,
+    figsize=figsize,
+    dpi=dpi,
+    return_fig=return_fig)
+  return bin_data['expected_calibration_error'], combined_reliability_diagram
 
 def reliability_diagrams(results,
                          num_bins=10,

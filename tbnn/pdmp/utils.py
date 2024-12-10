@@ -54,9 +54,6 @@ def compute_dot_prod(input_a, input_b):
   # multiplication, and then sum everything
   element_wise_prod = [tf.multiply(g, v) for g,v in
                        zip(input_a, input_b)]
-  #                     for i in range(len(velocity))]
-  #element_wise_prod = [tf.multiply(grads_target_log_prob[i], velocity[i])
-  #                     for i in range(len(velocity))]
   # now sum it all together
   dot_prod = sum_list(element_wise_prod)
   return dot_prod

@@ -25,7 +25,7 @@ tfd = tfp.distributions
 VALID_NETWORKS = [
     'lenet5', 'resnet20', 'resnet18', 'resnet50', 'kaggle', 'small_cnn',
     'small_regression', 'logistic', 'retinopathy', 'uci_mlp', 'nfnet', 'nfnet2',
-    'resnet20_wide', 'med_mnist', 'cifar_alexnet', 'resnet50_keras'
+    'resnet20_wide', 'med_mnist', 'cifar_alexnet', 'resnet50_keras', 'uci'
 ]
 VALID_PRIOR_STRS = ['fan_in']
 VALID_LIKELIHOOD = ['normal', 'bernoulli', 'categorical']
@@ -523,24 +523,6 @@ def get_small_regression(input_dims,
                          use_bias=True,
                          vi=False,
                          activation='tanh'):
-  # inputs = Input(input_dims)
-  # layer_one = get_dense_layer(100,
-  #                             activation=activation,
-  #                             prior=prior,
-  #                             vi=vi)
-  # x = layer_one(inputs)
-  # layer_two = get_dense_layer(50,
-  #                             activation=activation,
-  #                             prior=prior,
-  #                             vi=vi)
-  # x = layer_two(x)
-  # layer_three = get_dense_layer(out_dims,
-  #                               activation=activation,
-  #                               prior=prior,
-  #                               vi=vi)
-  # outputs = layer_three(x)
-  # small_regression = Model(inputs, outputs)
-
   inputs = Input(input_dims)
   x = Dense(25,
             kernel_regularizer=get_prior_neg_log_prob_fn(prior,
@@ -558,16 +540,54 @@ def get_small_regression(input_dims,
                                                        use_bias=use_bias,
                                                        is_bias=True),
             activation=activation)(x)
-  # x = Dense(128,
-  #           kernel_regularizer=get_prior_neg_log_prob_fn(prior,
-  #                                                        use_bias=use_bias),
-  #           use_bias=use_bias,
-  #           bias_regularizer=get_prior_neg_log_prob_fn(prior,
-  #                                                      use_bias=use_bias,
-  #                                                      is_bias=True),
-  #           activation=activation)(x)
+  outputs = Dense(out_dims,
+                  kernel_regularizer=get_prior_neg_log_prob_fn(
+                      prior, use_bias=use_bias),
+                  use_bias=use_bias,
+                  bias_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                             use_bias=use_bias,
+                                                             is_bias=True),
+                  activation=None)(x)
+  small_regression = Model(inputs, outputs)
+  return small_regression
 
-  # x = Dense(512,
+def get_linear_regression(input_dims,
+                          out_dims,
+                          prior=1.0,
+                          use_bias=True,
+                          vi=False,
+                          activation='tanh'):
+  inputs = Input(input_dims)
+  outputs = Dense(25,
+            kernel_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                         use_bias=use_bias),
+            use_bias=use_bias,
+            bias_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                       use_bias=use_bias,
+                                                       is_bias=True),
+            activation=activation)(inputs)
+  small_regression = Model(inputs, outputs)
+  return small_regression
+
+
+
+
+def get_uci_regression(input_dims,
+                       out_dims,
+                       prior=1.0,
+                       use_bias=True,
+                       vi=False,
+                       activation='tanh'):
+  inputs = Input(input_dims)
+  x = Dense(50,
+            kernel_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                         use_bias=use_bias),
+            use_bias=use_bias,
+            bias_regularizer=get_prior_neg_log_prob_fn(prior,
+                                                       use_bias=use_bias,
+                                                       is_bias=True),
+            activation=activation)(inputs)
+  # x = Dense(256,
   #           kernel_regularizer=get_prior_neg_log_prob_fn(prior,
   #                                                        use_bias=use_bias),
   #           use_bias=use_bias,
@@ -575,28 +595,7 @@ def get_small_regression(input_dims,
   #                                                      use_bias=use_bias,
   #                                                      is_bias=True),
   #           activation=activation)(x)
-  # x = Dense(512,
-  #           kernel_regularizer=get_prior_neg_log_prob_fn(
-  #             prior, use_bias=use_bias),
-  #           use_bias=use_bias,
-  #           bias_regularizer=get_prior_neg_log_prob_fn(
-  #             prior, use_bias=use_bias, is_bias=True),
-  #           activation=activation)(x)
-  # x = Dense(512,
-  #           kernel_regularizer=get_prior_neg_log_prob_fn(
-  #             prior, use_bias=use_bias),
-  #           use_bias=use_bias,
-  #           bias_regularizer=get_prior_neg_log_prob_fn(
-  #             prior, use_bias=use_bias, is_bias=True),
-  #           activation=activation)(x)
-  # x = Dense(10,
-  #           kernel_regularizer=get_prior_neg_log_prob_fn(
-  #             prior, use_bias=use_bias),
-  #           use_bias=use_bias,
-  #           bias_regularizer=get_prior_neg_log_prob_fn(
-  #             prior, use_bias=use_bias, is_bias=True),
-  #           activation='leaky_relu')(x)
-  # x = Dense(10,
+  # x = Dense(256,
   #           kernel_regularizer=get_prior_neg_log_prob_fn(prior,
   #                                                        use_bias=use_bias),
   #           use_bias=use_bias,
@@ -612,8 +611,9 @@ def get_small_regression(input_dims,
                                                              use_bias=use_bias,
                                                              is_bias=True),
                   activation=None)(x)
-  small_regression = Model(inputs, outputs)
-  return small_regression
+  uci_regression = Model(inputs, outputs)
+  return uci_regression
+
 
 
 def get_logistic(input_dims,
@@ -1083,8 +1083,8 @@ def get_network(network,
       model = get_small_regression(input_dims, output_dims, prior, use_bias, vi)
     elif network == 'logistic':
       model = get_logistic(input_dims, output_dims, prior, use_bias, vi)
-    elif network == 'uci_mlp':
-      model = get_uci_mlp(input_dims, 2, prior, use_bias)
+    elif network == 'uci':
+      model = get_uci_regression(input_dims, output_dims, prior, use_bias, vi)
     elif network == 'med_mnist':
       model = get_med_mnist(input_dims, 7, prior, use_bias)
     elif network == 'cifar_alexnet':

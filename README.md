@@ -1,11 +1,8 @@
 # Piecewise Deterministic Markov Processes for Bayesian Neural Networks
 
+## Corrected paper on arXiv
+Corrects typo in equation 11, and corrects results due to bug in prior software where mini-batch gradients were not being scaled appropriately.
 [arxiv](https://arxiv.org/abs/2302.08724)
-
-
-## More instructions coming soon!
-
-Sorry for not having more documentation here, its coming (am just swamped finishing my dissertations). If you have any questions in the interim, please email me at ej.goan@qut.edu.au :)
 
 ## Scripts to train models
 

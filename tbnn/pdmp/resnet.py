@@ -27,71 +27,6 @@ class Linear(Layer):
         return inputs
 
 
-# def get_prior_neg_log_prob_fn(prior,
-#                               kernel_dims=None,
-#                               use_bias=True,
-#                               is_bias=False):
-#     """will get the prior functions needed for this layer
-
-#     Will handle two types of priors:
-#       1) Gaussian with all same variance
-#       2) Gaussian with variance based on fan in dimensions
-
-#     The option to allow for fan in dimensions is to allow for models
-#     which want to set the variance parameter to encourage the output
-#     variance to be 1.0.
-
-#     Args:
-#       prior (float or str):
-#         If the prior argument is a float, then will return a Gaussian with a
-#         variance set to this value. If it is a string saying "fan_in", then
-#         will scale the  variance such that the output has unit variance
-#         (under the prior).
-#       kernel_dims (list(int)):
-#         dimensions of the kernel for the layer. If it is a a conv layer, will have
-#         four dimensions, if dense will have two. These are only to be used if
-#         a prior to scale the output variance is needed.
-#       use_bias (bool):
-#         whether the bias has been included or not. Is needed if aiming to scale
-#         the output variance for a specific layer.
-#       is_bias (bool):
-#         boolean to say whether this is the bias variable or not.
-#         if it is the bias variable, but `use_bias` is false, will just
-#         set the prior for this variable to `None`
-
-#     Returns:
-#       prior negative log probability function as a specified from tfp.
-
-#     Raises:
-#       Not implemented error for scaling vartiance. Starting with simple
-#       constant variance and will move to the add scaling in a bit. Check
-#       my notes for more info.
-#     """
-#     # check if the specified prior is an float (or int) or a string to say we
-#     # should wither have a constant variance.
-#     if isinstance(prior, numbers.Number):
-#         # if this is the prior for the bias variable, but we aren't using the bias,
-#         # then we will just return `None`
-#         if(is_bias and not use_bias):
-#             return None
-#         # otherwise, is either the kernel (which we should always have),
-#         # or is the bias and we are actually using it
-#         #
-#         # then we should just have constant variance
-#         # lets cast the this value to a tf float32
-#         p_scale = tf.cast(prior, dtype=tf.float32)
-#         prior_fn = tfd.Normal(loc=0., scale=p_scale)
-
-#         def prior_constant_var_neg_log_prob(x):
-#             log_prob = tf.reduce_sum(prior_fn.log_prob(x))
-#             # return negative log prob
-#             return -1.0 * log_prob
-#         return prior_constant_var_neg_log_prob
-#     else:
-#         # otherwise need to scale the variance.
-#         raise NotImplementedError('Currently only support constant var')
-
-
 def get_prior_neg_log_prob_fn(prior,
                               kernel_dims=None,
                               use_bias=True,
@@ -168,16 +103,6 @@ def prior_constant_var_neg_log_prob(scale):
   --------
       callable that computes the neg log likelihood over the params.
   """
-  # then we should just have constant variance
-  # lets cast the this value to a tf float32
-  # p_scale = tf.cast(scale, dtype=tf.float32)
-  # prior_fn = tfd.Normal(loc=0., scale=p_scale)
-  # def _fn(x):
-  #   log_prob = tf.reduce_sum(prior_fn.log_prob(x))
-  #   # return negative log prob
-  #   return -1.0 * log_prob
-  # return _fn
-  # return None
   return tf.keras.regularizers.L2(l2=1.0 / scale)
 
 
@@ -190,16 +115,6 @@ class Swish(Layer):
     def call(self, inputs):
         return keras.activations.swish(inputs)
 
-
-# def prior_fn(layer, var=0.5):
-#   var = tf.cast(var, dtype=tf.float32)
-#   def fn():
-#     # get the neg lop prob, though exclude the
-#     # constant term out the front.
-#     neg_log_prob = (tf.reduce_sum(tf.square(layer.kernel)) +
-#                     tf.reduce_sum(tf.square(layer.bias))) / (2.0 * var)
-#     return neg_log_prob
-#   return fn
 
 def prior_fn(layer, var=5.0):
     def fn():

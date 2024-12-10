@@ -63,6 +63,16 @@ def load_dataset(data_class, batch_size):
     data_class = load_toy_b()
   elif (data_class.lower() == 'toy_c'):
     data_class = load_toy_c()
+  elif (data_class.lower() == 'boston'):
+    data_class = load_uci(batch_size, 'bostonHousing')
+  elif (data_class.lower() == 'concrete'):
+    data_class = load_uci(batch_size, 'concrete')
+  elif (data_class.lower() == 'yacht'):
+    data_class = load_uci(batch_size, 'yacht')
+  elif (data_class.lower() == 'energy'):
+    data_class = load_uci(batch_size, 'energy')
+  elif (data_class.lower() == 'naval'):
+    data_class = load_uci(batch_size, 'naval-propulsion-plant')
   elif (data_class.lower() == 'test_a'):
     data_class = load_test_a()
   elif (data_class.lower() == 'test_b'):
@@ -216,6 +226,43 @@ def load_toy_c():
   return data_class
 
 
+def load_linear_test():
+  """ linear regression data for testing
+  """
+  num_train = 500
+  num_test = 500
+  epsilon = np.random.randn(num_train, 1) * 0.015
+  x_train = np.linspace(-0.45, 0.45, num_train).reshape(-1, 1)
+  x_test = np.linspace(-0.6, 0.6, num_test).reshape(-1, 1)
+  y_train = (
+      x_train * np.sin(4.0 * np.pi * x_train) + epsilon)
+  y_test = x_test * np.sin(
+      4.0 * np.pi * x_test)
+  # now create the dictionary to hold the dimensions of our data
+  dimension_dict = {
+      'in_dim': 2,
+      'out_dim': 1,
+      'in_width': 1,
+      'in_height': 1,
+      'in_channels': 1,
+      'dataset_size': 500
+  }
+  #
+  # now make some tf.Datasets with them
+  train = tf.data.Dataset.from_tensor_slices((x_train, y_train)).batch(num_train)
+  test = tf.data.Dataset.from_tensor_slices((x_test, y_test)).batch(num_test)
+  # make the training dataset an iterable and repeat it
+  train = train.repeat()
+  data_class = Data(train=train,
+                    test=test,
+                    test_orig=None,
+                    label_dict=None,
+                    dimension_dict=dimension_dict)
+  return data_class
+
+
+
+
 def load_clusters(num_data=200, num_test=100):
   """creates clusters sampled from two Gaussians
   """
@@ -252,6 +299,122 @@ def load_clusters(num_data=200, num_test=100):
   }
   #validation data is the same as the test data
   return data_class
+
+
+def load_uci_helper(data_dir):
+  data = np.loadtxt(os.path.join(data_dir, 'data.txt'))
+  index_features = np.loadtxt(os.path.join(data_dir, 'index_features.txt'))
+  index_target = np.loadtxt(os.path.join(data_dir, 'index_target.txt'))
+  # load in the index for the split
+  # just use the first (or zeroth split)
+  index_train = np.loadtxt(os.path.join(data_dir, 'index_train_0.txt'))
+  index_test = np.loadtxt(os.path.join(data_dir, 'index_test_0.txt'))
+  # now split into x a y
+  X = data[ : , [int(i) for i in index_features.tolist()] ]
+  y = data[ : , int(index_target.tolist()) ]
+  # normalise the data
+  x_mu = np.mean(X, axis=0)
+  # time.sleep(10)
+  x_std = np.std(X, axis=0)
+  # make sure any zero values are converted to one
+  x_std[x_std == 0.0] = 1.0
+  y_mu = np.mean(y, axis=0)
+  y_std = np.std(y, axis=0)
+  X = (X - x_mu) / x_std
+  y = (y - y_mu) / y_std
+  # print('y, ', y_mu, y_std)
+  # now split into train and test
+  X_train = X[ [int(i) for i in index_train.tolist()] ]
+  y_train = y[ [int(i) for i in index_train.tolist()] ]
+  X_test = X[ [int(i) for i in index_test.tolist()] ]
+  y_test = y[ [int(i) for i in index_test.tolist()] ]
+  return X_train, y_train.reshape(-1, 1), X_test, y_test.reshape(-1, 1), y_mu, y_std
+
+
+def load_uci(batch_size, uci_data):
+  """load dataset from UCI
+
+  Data is from the MC Dropout paper
+  https://github.com/yaringal/DropoutUncertaintyExps
+
+  Code for loading it all in is provided there too.
+  """
+  data_dir = os.path.join(
+    os.environ['DATA_PATH'],
+    'DropoutUncertaintyExps/UCI_Datasets/', uci_data, 'data')
+  # load in the data
+  x_train, y_train, x_test, y_test, y_mu, y_std = load_uci_helper(data_dir)
+  print(y_mu)
+  print(y_std)
+  time.sleep(10)
+  num_train = x_train.shape[0]
+  num_test = x_test.shape[0]
+  dimension_dict = {
+      'in_dim': x_train.shape[1],
+      'out_dim': 1,
+      'in_width': 1,
+      'in_height': 1,
+      'in_channels': 1,
+      'dataset_size': num_train,
+      'y_mu': y_mu,
+      'y_std': y_std,
+  }
+  print(dimension_dict)
+  print(x_train.shape)
+  #
+  # now make some tf.Datasets with them
+  train = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+  test = tf.data.Dataset.from_tensor_slices((x_test, y_test)).batch(x_test.shape[0])
+  train = train.shuffle(x_train.shape[0]).batch(10, drop_remainder=True)
+  # make the training dataset an iterable and repeat it
+  train = train.repeat()
+  data_class = Data(train=train,
+                    test=test,
+                    test_orig=None,
+                    label_dict=None,
+                    dimension_dict=dimension_dict)
+  return data_class
+
+
+
+
+def load_clusters(num_data=200, num_test=100):
+  """creates clusters sampled from two Gaussians
+  """
+  data_class = Data()
+  x_1 = np.random.multivariate_normal([0.0, 1.0],
+                                      np.array([[1.0, 0.8], [0.8, 1.0]]),
+                                      size=num_data // 2)
+  x_2 = np.random.multivariate_normal([2.0, 0.0],
+                                      np.array([[1.0, -0.4], [-0.4, 1.0]]),
+                                      size=num_data // 2)
+  X = np.vstack([x_1, x_2])
+  y = np.ones(num_data).reshape(-1, 1)
+  y[:np.int(num_data / 2)] = 0
+  print('X shape = {}'.format(X.shape))
+  print('y shape = {}'.format(y.shape))
+  scaler = MinMaxScaler((-1.0, 1.0)).fit(X)
+  X = scaler.transform(X)
+  # create a random split now
+  x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=num_test)
+  data_class.x_train = x_train
+  data_class.x_test = x_test
+  data_class.y_train = y_train
+  data_class.y_test = y_test
+  # now create the dictionary to hold the dimensions of our data
+  data_class.x_val = data_class.x_test
+  data_class.y_val = data_class.y_test
+  data_class.dimension_dict = {
+      'in_dim': 2,
+      'out_dim': 1,
+      'in_width': 1,
+      'in_height': 1,
+      'in_channels': 1,
+      'dataset_size': 200
+  }
+  #validation data is the same as the test data
+  return data_class
+
 
 
 def load_moons(num_data=5000, num_test=100):
@@ -647,7 +810,7 @@ def load_cifar_100(batch_size):
       8: 'ship',
       9: 'truck'
     }
-  return _load_cifar('cifar100', num_classes, label_dict, batch_size, augment=False)
+  return _load_cifar('cifar100', num_classes, label_dict, batch_size, augment=True)
 
 
 
@@ -740,7 +903,7 @@ def _load_cifar(cifar_type, num_classes, label_dict, batch_size, augment=False):
                     dimension_dict=dimension_dict)
   return data_class
 
-def load_imagenet(batch_size, augment=False):
+def load_imagenet(batch_size, augment=True):
   manual_dir = os.path.join(os.environ['DATA_PATH'], 'imagenet_tf', 'tar')
   extract_dir = os.path.join(os.environ['DATA_PATH'], 'imagenet_tf', 'tf',
                              'extracted')
@@ -936,7 +1099,7 @@ def init_imagenet_dataset(
     train_dataset = train_dataset.shuffle(buffer_size, seed=seed)
   train_dataset = train_dataset.map(train_pre_batch,
                                     num_parallel_calls=AUTOTUNE).batch(
-                                        batch_size, drop_remainder=is_tpu)
+                                      batch_size, drop_remainder=is_tpu)
 
   mean, std = init_mean_std_by_rescale_mode(rescale_mode)
   if use_token_label:
