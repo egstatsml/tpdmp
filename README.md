@@ -1,5 +1,7 @@
 # Piecewise Deterministic Markov Processes for Bayesian Neural Networks
 
+[[Update Paper]](https://arxiv.org/abs/2302.08724) [[Errata]](https://www.ethangoan.com/assets/pdmp_errata/errata.pdf)
+
 ## Corrected paper on arXiv
 Corrects typo in equation 11, and corrects results due to bug in prior software where mini-batch gradients were not being scaled appropriately.
 [arxiv](https://arxiv.org/abs/2302.08724)
@@ -23,7 +25,7 @@ python train_conv.py resnet20 categorical 1.0 \
        --lr 0.0005 \
        --momentum 0.9 \
        --schedule cosine\
-       --no_log 
+       --no_log
 ```
 
 And then to run Boomerang sampler
@@ -41,7 +43,7 @@ python train_conv.py resnet20 categorical 0 \
        --ref 0.1 \
        --std_ref 0.001 \
        --map_path <MAP_OUT_DIR>/map_weights.pkl \
-       --no_log 
+       --no_log
 ```
 
 Can then get performance metrics from the [bin/entropy.py](bin/entropy.py) script (is called entropy but this will report other calibration metrics as well).
